@@ -1,0 +1,165 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Platform {
+  YOUTUBE
+  RSS
+  WEB
+  INSTAGRAM
+  TIKTOK
+}
+
+enum SourceTier {
+  NORMAL
+  IMPORTANT
+}
+
+enum SourceStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum ViewState {
+  UNVIEWED
+  VIEWED
+}
+
+enum DecisionStatus {
+  UNMARKED
+  CANDIDATE
+  DONE
+  PENDING
+  REJECTED
+}
+
+enum ProcessingStatus {
+  PENDING
+  READY
+  FAILED
+}
+
+enum PushStatus {
+  NOT_REQUIRED
+  PENDING
+  SENT
+  FAILED
+}
+
+enum MonitorStatus {
+  SUCCESS
+  FAILED
+}
+
+enum ResearchStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
+model Source {
+  id                String       @id @default(cuid())
+  name              String
+  platform          Platform
+  url               String       @unique
+  tier              SourceTier   @default(NORMAL)
+  status            SourceStatus @default(ACTIVE)
+  notes             String?
+  lastCheckedAt     DateTime?
+  lastCheckStatus   String?
+  lastCheckError    String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  videos            VideoItem[]
+  monitorRuns       MonitorRun[]
+
+  @@index([platform, status])
+  @@index([tier, status])
+}
+
+model VideoItem {
+  id                  String           @id @default(cuid())
+  sourceId            String?
+  source              Source?          @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  platform            Platform
+  platformVideoId     String?
+  originalUrl         String           @unique
+  canonicalUrl        String?
+  thumbnailUrl        String?
+  originalTitle       String
+  chineseTitle        String?
+  description         String?
+  chineseSummary      String?
+  publishedAt         DateTime?
+  likeCount           Int?
+  sourceName          String
+  detectedAt          DateTime         @default(now())
+  lastSeenAt          DateTime         @default(now())
+  score               Int              @default(0)
+  scoreReason         String?
+  viewState           ViewState        @default(UNVIEWED)
+  viewedAt            DateTime?
+  decisionStatus      DecisionStatus   @default(UNMARKED)
+  processingStatus    ProcessingStatus @default(PENDING)
+  processingError     String?
+  translationStatus   ProcessingStatus @default(PENDING)
+  summaryStatus       ProcessingStatus @default(PENDING)
+  pushStatus          PushStatus       @default(NOT_REQUIRED)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  researchTasks       ResearchTask[]
+  pushEvents          PushEvent[]
+
+  @@index([detectedAt])
+  @@index([decisionStatus])
+  @@index([viewState, decisionStatus])
+  @@index([platform, platformVideoId])
+}
+
+model MonitorRun {
+  id              String        @id @default(cuid())
+  sourceId        String?
+  source          Source?       @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  status          MonitorStatus
+  startedAt       DateTime      @default(now())
+  finishedAt      DateTime?
+  newVideoCount   Int           @default(0)
+  updatedCount    Int           @default(0)
+  errorMessage    String?
+  createdAt       DateTime      @default(now())
+
+  @@index([startedAt])
+  @@index([status])
+}
+
+model ResearchTask {
+  id          String         @id @default(cuid())
+  videoId     String
+  video       VideoItem      @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  status      ResearchStatus @default(TODO)
+  notes       String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([status])
+  @@index([videoId])
+}
+
+model PushEvent {
+  id          String     @id @default(cuid())
+  videoId     String
+  video       VideoItem  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  provider    String     @default("feishu")
+  status      PushStatus @default(PENDING)
+  payload     Json?
+  error       String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([provider, status])
+}
