@@ -54,6 +54,30 @@ function parseRows(stdout: string) {
     .map((line) => JSON.parse(line));
 }
 
+function cleanText(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function fallbackSourceName(sourceUrl: string) {
+  try {
+    const url = new URL(sourceUrl);
+    const segments = url.pathname
+      .split("/")
+      .map((segment) => decodeURIComponent(segment.trim()))
+      .filter(Boolean);
+
+    const handle = segments.find((segment) => segment.startsWith("@"));
+    if (handle) return handle.slice(1);
+
+    const firstSegment = segments.at(0);
+    if (firstSegment) return firstSegment.replace(/^@/, "");
+
+    return url.hostname.replace(/^www\./, "");
+  } catch {
+    return "Unknown source";
+  }
+}
+
 function mapVideo(raw: Record<string, unknown>, fallbackUrl: string): ExtractedVideo {
   const fallbackIsYoutube = /youtu\.?be|youtube\.com/i.test(fallbackUrl);
   const url =
@@ -83,6 +107,32 @@ function mapVideo(raw: Record<string, unknown>, fallbackUrl: string): ExtractedV
       (typeof raw.creator === "string" && raw.creator) ||
       "Unknown source",
   };
+}
+
+export async function inferSourceName(sourceUrl: string) {
+  const ytDlp = process.env.YTDLP_PATH ?? "yt-dlp";
+
+  try {
+    const { stdout } = await execFileAsync(ytDlp, buildLatestListArgs(sourceUrl), {
+      maxBuffer: 1024 * 1024 * 4,
+      timeout: 30_000,
+    });
+    const latest = parseRows(stdout).at(0) as Record<string, unknown> | undefined;
+    const inferred =
+      cleanText(latest?.playlist_channel) ??
+      cleanText(latest?.playlist_uploader) ??
+      cleanText(latest?.playlist_title)?.replace(/\s+-\s+Videos$/i, "") ??
+      cleanText(latest?.channel) ??
+      cleanText(latest?.uploader) ??
+      cleanText(latest?.creator) ??
+      cleanText(latest?.channel_id);
+
+    if (inferred) return inferred;
+  } catch {
+    // Fall back to a deterministic name from the URL so source creation still works.
+  }
+
+  return fallbackSourceName(sourceUrl);
 }
 
 export async function extractVideo(url: string): Promise<ExtractedVideo> {

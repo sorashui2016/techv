@@ -43,7 +43,7 @@ export async function analyzeVideoWithMinimax(input: AiVideoInput): Promise<AiVi
 
   const apiUrl =
     process.env.MINIMAX_API_URL ?? "https://api.minimax.chat/v1/text/chatcompletion_v2";
-  const model = process.env.MINIMAX_MODEL ?? "abab6.5s-chat";
+  const model = process.env.MINIMAX_MODEL ?? "MiniMax-M2.7-highspeed";
   const groupId = process.env.MINIMAX_GROUP_ID;
   const url = groupId ? `${apiUrl}?GroupId=${groupId}` : apiUrl;
 
@@ -69,8 +69,16 @@ export async function analyzeVideoWithMinimax(input: AiVideoInput): Promise<AiVi
     },
     body: JSON.stringify({
       model,
-      messages: [{ sender_type: "USER", text: prompt }],
+      messages: [
+        {
+          role: "system",
+          name: "Tech Radar",
+          content: "你是科技视频选题编辑，只输出可解析的 JSON。",
+        },
+        { role: "user", name: "user", content: prompt },
+      ],
       temperature: 0.2,
+      max_completion_tokens: 1000,
     }),
   });
 
@@ -79,6 +87,10 @@ export async function analyzeVideoWithMinimax(input: AiVideoInput): Promise<AiVi
   }
 
   const data = await response.json();
+  if (data?.base_resp?.status_code && data.base_resp.status_code !== 0) {
+    throw new Error(`Minimax request failed: ${data.base_resp.status_msg}`);
+  }
+
   const text =
     data?.reply ??
     data?.choices?.[0]?.message?.content ??
