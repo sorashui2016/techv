@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "./db";
+import { sendFeishuVideoMessage } from "./feishu";
 import { analyzeVideoWithMinimax } from "./minimax";
 import { ruleScore } from "./scoring";
 import { extractRecentVideos, extractVideo } from "./yt-dlp";
@@ -50,7 +51,7 @@ async function upsertVideo(
     };
   }
 
-  await prisma.videoItem.create({
+  const createdVideo = await prisma.videoItem.create({
     data: {
       sourceId: source?.id,
       platform: video.platform,
@@ -73,6 +74,49 @@ async function upsertVideo(
       pushStatus: source?.tier === "IMPORTANT" ? "PENDING" : "NOT_REQUIRED",
     },
   });
+
+  if (source?.tier === "IMPORTANT") {
+    try {
+      const pushResult = await sendFeishuVideoMessage({
+        title: ai.chineseTitle,
+        originalTitle: video.originalTitle,
+        summary: ai.chineseSummary,
+        score: ai.score,
+        sourceName: source.name,
+        originalUrl: video.originalUrl,
+        publishedAt: video.publishedAt,
+      });
+
+      if (!pushResult.skipped) {
+        await prisma.videoItem.update({
+          where: { id: createdVideo.id },
+          data: { pushStatus: "SENT" },
+        });
+        await prisma.pushEvent.create({
+          data: {
+            videoId: createdVideo.id,
+            provider: "feishu",
+            status: "SENT",
+            payload: pushResult.response ?? undefined,
+          },
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Feishu push failed";
+      await prisma.videoItem.update({
+        where: { id: createdVideo.id },
+        data: { pushStatus: "FAILED" },
+      });
+      await prisma.pushEvent.create({
+        data: {
+          videoId: createdVideo.id,
+          provider: "feishu",
+          status: "FAILED",
+          error: message.slice(0, 1000),
+        },
+      });
+    }
+  }
 
   return { created: true };
 }
@@ -168,6 +212,29 @@ export async function monitorDueSources(now = new Date()) {
     } catch (error) {
       results.push({
         sourceId: source.id,
+        ok: false,
+        error: error instanceof Error ? error.message : "Unknown monitor error",
+      });
+    }
+  }
+
+  return results;
+}
+
+export async function monitorAllSources() {
+  const sources = await prisma.source.findMany({
+    where: { status: "ACTIVE" },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const results = [];
+  for (const source of sources) {
+    try {
+      results.push({ sourceId: source.id, sourceName: source.name, ok: true, ...(await monitorSource(source.id)) });
+    } catch (error) {
+      results.push({
+        sourceId: source.id,
+        sourceName: source.name,
         ok: false,
         error: error instanceof Error ? error.message : "Unknown monitor error",
       });

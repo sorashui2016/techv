@@ -12,20 +12,12 @@ const decisions: Array<{ value: DecisionStatus; label: string }> = [
 
 export function VideoActions({
   videoId,
-  originalUrl,
   currentStatus,
 }: {
   videoId: string;
-  originalUrl: string;
   currentStatus: DecisionStatus;
 }) {
   const router = useRouter();
-
-  async function markViewedAndOpen() {
-    await fetch(`/api/videos/${videoId}/view`, { method: "POST" });
-    window.open(originalUrl, "_blank", "noopener,noreferrer");
-    router.refresh();
-  }
 
   async function setDecision(decisionStatus: DecisionStatus) {
     await fetch(`/api/videos/${videoId}/decision`, {
@@ -44,13 +36,6 @@ export function VideoActions({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <button
-        type="button"
-        onClick={markViewedAndOpen}
-        className="rounded-md bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800"
-      >
-        原始链接
-      </button>
       {decisions.map((decision) => (
         <button
           type="button"

@@ -67,6 +67,7 @@ model Source {
   name              String
   platform          Platform
   url               String       @unique
+  sourceKey         String?      @unique
   tier              SourceTier   @default(NORMAL)
   status            SourceStatus @default(ACTIVE)
   notes             String?

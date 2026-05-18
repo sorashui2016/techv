@@ -5,6 +5,13 @@ import type { ExtractedVideo } from "./types";
 
 const execFileAsync = promisify(execFile);
 
+export class SourceNameInferenceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SourceNameInferenceError";
+  }
+}
+
 function detectPlatform(url: string): Platform {
   if (/youtu\.?be|youtube\.com/i.test(url)) return "YOUTUBE";
   if (/instagram\.com/i.test(url)) return "INSTAGRAM";
@@ -58,6 +65,45 @@ function cleanText(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function detectSourcePlatform(url: string) {
+  return detectPlatform(url);
+}
+
+function normalizeUrlKey(sourceUrl: string) {
+  try {
+    const url = new URL(sourceUrl);
+    url.hash = "";
+    url.search = "";
+    url.hostname = url.hostname.replace(/^www\./, "").toLowerCase();
+    url.pathname = url.pathname.replace(/\/+$/, "");
+    return url.toString().toLowerCase();
+  } catch {
+    return sourceUrl.trim().toLowerCase();
+  }
+}
+
+function sourceKeyFromMetadata(sourceUrl: string, raw?: Record<string, unknown>) {
+  const platform = detectSourcePlatform(sourceUrl);
+
+  if (platform === "YOUTUBE") {
+    const channelId =
+      cleanText(raw?.playlist_channel_id) ??
+      cleanText(raw?.channel_id) ??
+      cleanText(raw?.playlist_id);
+
+    if (channelId) return `youtube:${channelId}`;
+
+    const handle =
+      cleanText(raw?.playlist_uploader_id) ??
+      cleanText(raw?.uploader_id) ??
+      cleanText(raw?.channel);
+
+    if (handle) return `youtube:${handle.toLowerCase()}`;
+  }
+
+  return `${platform.toLowerCase()}:${normalizeUrlKey(sourceUrl)}`;
+}
+
 function fallbackSourceName(sourceUrl: string) {
   try {
     const url = new URL(sourceUrl);
@@ -68,6 +114,10 @@ function fallbackSourceName(sourceUrl: string) {
 
     const handle = segments.find((segment) => segment.startsWith("@"));
     if (handle) return handle.slice(1);
+
+    const channelIndex = segments.findIndex((segment) => segment === "channel");
+    const channelId = channelIndex >= 0 ? segments.at(channelIndex + 1) : undefined;
+    if (channelId) return channelId;
 
     const firstSegment = segments.at(0);
     if (firstSegment) return firstSegment.replace(/^@/, "");
@@ -109,7 +159,21 @@ function mapVideo(raw: Record<string, unknown>, fallbackUrl: string): ExtractedV
   };
 }
 
-export async function inferSourceName(sourceUrl: string) {
+function errorMessage(error: unknown) {
+  if (error instanceof Error) {
+    const details =
+      "stderr" in error && typeof error.stderr === "string" ? error.stderr.trim() : undefined;
+    return details || error.message;
+  }
+  return "Unknown source name inference error";
+}
+
+export async function inferSourceName(sourceUrl: string, options: { strict?: boolean } = {}) {
+  const metadata = await inferSourceMetadata(sourceUrl, options);
+  return metadata.name;
+}
+
+export async function inferSourceMetadata(sourceUrl: string, options: { strict?: boolean } = {}) {
   const ytDlp = process.env.YTDLP_PATH ?? "yt-dlp";
 
   try {
@@ -127,12 +191,23 @@ export async function inferSourceName(sourceUrl: string) {
       cleanText(latest?.creator) ??
       cleanText(latest?.channel_id);
 
-    if (inferred) return inferred;
-  } catch {
+    if (inferred) {
+      return {
+        name: inferred,
+        sourceKey: sourceKeyFromMetadata(sourceUrl, latest),
+      };
+    }
+  } catch (error) {
+    if (options.strict) {
+      throw new SourceNameInferenceError(errorMessage(error));
+    }
     // Fall back to a deterministic name from the URL so source creation still works.
   }
 
-  return fallbackSourceName(sourceUrl);
+  return {
+    name: fallbackSourceName(sourceUrl),
+    sourceKey: sourceKeyFromMetadata(sourceUrl),
+  };
 }
 
 export async function extractVideo(url: string): Promise<ExtractedVideo> {

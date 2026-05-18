@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { inferSourceName } from "@/lib/yt-dlp";
+import { inferSourceMetadata, SourceNameInferenceError } from "@/lib/yt-dlp";
 
 const schema = z.object({
   name: z.preprocess(
@@ -29,27 +29,41 @@ export async function POST(request: Request) {
 
   const results = [];
   for (const url of urls) {
-    const existing = await prisma.source.findUnique({ where: { url } });
-    if (existing) {
-      results.push({ url, status: "skipped", source: existing });
-      continue;
-    }
+    try {
+      const metadata = await inferSourceMetadata(url, { strict: true });
+      const existing = await prisma.source.findFirst({
+        where: { OR: [{ url }, { sourceKey: metadata.sourceKey }] },
+      });
 
-    const source = await prisma.source.create({
-      data: {
-        name: urls.length === 1 && body.name ? body.name : await inferSourceName(url),
-        url,
-        platform: body.platform,
-        tier: body.tier,
-        notes: body.notes,
-      },
-    });
-    results.push({ url, status: "created", source });
+      if (existing) {
+        results.push({ url, status: "skipped", source: existing });
+        continue;
+      }
+
+      const source = await prisma.source.create({
+        data: {
+          name: urls.length === 1 && body.name ? body.name : metadata.name,
+          url,
+          sourceKey: metadata.sourceKey,
+          platform: body.platform,
+          tier: body.tier,
+          notes: body.notes,
+        },
+      });
+      results.push({ url, status: "created", source });
+    } catch (error) {
+      if (error instanceof SourceNameInferenceError) {
+        results.push({ url, status: "failed", error: error.message });
+        continue;
+      }
+      throw error;
+    }
   }
 
   return NextResponse.json({
     createdCount: results.filter((result) => result.status === "created").length,
     skippedCount: results.filter((result) => result.status === "skipped").length,
+    failedCount: results.filter((result) => result.status === "failed").length,
     results,
   });
 }

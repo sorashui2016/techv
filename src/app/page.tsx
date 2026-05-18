@@ -1,16 +1,18 @@
 import Image from "next/image";
 import Link from "next/link";
-import type { Prisma } from "@prisma/client";
+import type { DecisionStatus, Prisma } from "@prisma/client";
+import { DashboardFilters } from "@/components/DashboardFilters";
 import { Nav } from "@/components/Nav";
 import { SubmitLinkForm } from "@/components/SubmitLinkForm";
 import { VideoActions } from "@/components/VideoActions";
+import { VideoOpenLink } from "@/components/VideoOpenLink";
 import { decisionLabels, platformLabels, viewLabels } from "@/lib/labels";
 import { isKnownPrismaConnectionError } from "@/lib/monitor";
 import { prisma } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-type VideoRow = Prisma.VideoItemGetPayload<object>;
+type VideoRow = Prisma.VideoItemGetPayload<{ include: { source: true } }>;
 
 type SearchParams = Promise<{
   status?: string;
@@ -31,15 +33,17 @@ function dateText(date?: Date | null) {
 
 export default async function Home({ searchParams }: { searchParams: SearchParams }) {
   const params = await searchParams;
+  const selectedStatus = params.status ?? "UNMARKED";
 
   let videos: VideoRow[] = [];
   let dbError = false;
 
   try {
     videos = await prisma.videoItem.findMany({
+      include: { source: true },
       where: {
         decisionStatus:
-          params.status && params.status !== "ALL" ? (params.status as never) : undefined,
+          selectedStatus !== "ALL" ? (selectedStatus as DecisionStatus) : undefined,
         platform: params.platform && params.platform !== "ALL" ? (params.platform as never) : undefined,
         OR: params.q
           ? [
@@ -49,7 +53,7 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
             ]
           : undefined,
       },
-      orderBy: { detectedAt: "desc" },
+      orderBy: [{ source: { tier: "desc" } }, { detectedAt: "desc" }],
       take: 80,
     });
   } catch (error) {
@@ -80,11 +84,12 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
 
           <SubmitLinkForm />
 
-          <form className="grid gap-2 rounded-lg border border-zinc-200 bg-white p-3 md:grid-cols-4">
-            <select name="status" defaultValue={params.status ?? "ALL"} className="rounded-md border border-zinc-200 px-3 py-2 text-sm">
+          <DashboardFilters>
+            <select name="status" defaultValue={selectedStatus} className="rounded-md border border-zinc-200 px-3 py-2 text-sm">
+              <option value="UNMARKED">未标记</option>
               <option value="ALL">全部状态</option>
               {Object.entries(decisionLabels).map(([value, label]) => (
-                <option key={value} value={value}>
+                value === "UNMARKED" ? null : <option key={value} value={value}>
                   {label}
                 </option>
               ))}
@@ -99,7 +104,7 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
             </select>
             <input name="q" defaultValue={params.q ?? ""} placeholder="关键词搜索" className="rounded-md border border-zinc-200 px-3 py-2 text-sm" />
             <button className="rounded-md bg-zinc-950 px-3 py-2 text-sm font-medium text-white">筛选</button>
-          </form>
+          </DashboardFilters>
         </section>
 
         {dbError ? (
@@ -110,7 +115,9 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
 
         {!dbError && videos.length === 0 ? (
           <div className="rounded-lg border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-600">
-            还没有监测内容。可以先手动提交视频链接，或到信息源页面添加 YouTube 频道。
+            {selectedStatus === "UNMARKED"
+              ? "当前没有待处理内容。可以先手动提交视频链接，或到信息源页面添加 YouTube 频道。"
+              : "当前状态池没有内容。"}
           </div>
         ) : null}
 
@@ -119,16 +126,20 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
             const isOld = now - video.detectedAt.getTime() > 7 * 24 * 60 * 60 * 1000;
             const isViewedUnmarked =
               video.viewState === "VIEWED" && video.decisionStatus === "UNMARKED";
+            const isImportant = video.source?.tier === "IMPORTANT";
+            const cardClass = isViewedUnmarked
+              ? "border-zinc-300 bg-zinc-200 text-zinc-500"
+              : isImportant
+                ? "border-emerald-200 bg-emerald-50"
+                : "border-zinc-200 bg-white";
+            const mutedTextClass = isViewedUnmarked ? "text-zinc-500" : "text-zinc-700";
+            const faintTextClass = isViewedUnmarked ? "text-zinc-400" : "text-zinc-500";
 
             return (
               <details
                 key={video.id}
                 open={!isOld}
-                className={`rounded-lg border p-4 ${
-                  isViewedUnmarked
-                    ? "border-zinc-200 bg-zinc-100"
-                    : "border-zinc-200 bg-white"
-                }`}
+                className={`rounded-lg border p-4 ${cardClass}`}
               >
                 <summary className="cursor-pointer list-none">
                   <div className="flex items-start justify-between gap-3">
@@ -144,37 +155,58 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
                           {viewLabels[video.viewState]} · {decisionLabels[video.decisionStatus]}
                         </span>
                       </div>
-                      <h2 className="mt-3 text-base font-semibold leading-6">
+                      <VideoOpenLink
+                        videoId={video.id}
+                        originalUrl={video.originalUrl}
+                        className={`mt-3 block text-left text-base font-semibold leading-6 ${
+                          isViewedUnmarked ? "text-zinc-500 hover:text-zinc-600" : "hover:text-teal-700"
+                        }`}
+                      >
                         {video.chineseTitle ?? video.originalTitle}
-                      </h2>
+                      </VideoOpenLink>
                     </div>
                     {isOld ? <span className="text-xs text-zinc-500">7 天前内容</span> : null}
                   </div>
                 </summary>
 
                 <div className="mt-4 grid gap-4 sm:grid-cols-[180px_1fr]">
-                  <div className="relative aspect-video overflow-hidden rounded-md bg-zinc-200">
+                  <VideoOpenLink
+                    videoId={video.id}
+                    originalUrl={video.originalUrl}
+                    className="relative aspect-video overflow-hidden rounded-md bg-zinc-200"
+                  >
                     {video.thumbnailUrl ? (
                       <Image src={video.thumbnailUrl} alt="" fill className="object-cover" unoptimized />
                     ) : null}
-                  </div>
+                  </VideoOpenLink>
                   <div className="flex flex-col gap-3">
-                    <p className="text-sm text-zinc-500">{video.originalTitle}</p>
-                    <p className="text-sm leading-6 text-zinc-700">{video.chineseSummary}</p>
-                    <div className="grid gap-1 text-xs text-zinc-500 sm:grid-cols-2">
+                    <VideoOpenLink
+                      videoId={video.id}
+                      originalUrl={video.originalUrl}
+                      className={`text-left text-sm hover:text-teal-700 ${faintTextClass}`}
+                    >
+                      {video.originalTitle}
+                    </VideoOpenLink>
+                    <VideoOpenLink
+                      videoId={video.id}
+                      originalUrl={video.originalUrl}
+                      className={`text-left text-sm leading-6 hover:text-teal-700 ${mutedTextClass}`}
+                    >
+                      {video.chineseSummary}
+                    </VideoOpenLink>
+                    <div className={`grid gap-1 text-xs sm:grid-cols-2 ${faintTextClass}`}>
                       <span>来源：{video.sourceName}</span>
                       <span>发布时间：{dateText(video.publishedAt)}</span>
                       <span>点赞：{video.likeCount ?? "未知"}</span>
                       <span>监测：{dateText(video.detectedAt)}</span>
                     </div>
                     {isViewedUnmarked ? (
-                      <p className="rounded-md bg-white px-3 py-2 text-sm font-medium text-zinc-700">
+                      <p className="rounded-md bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-500">
                         已看过，待标记。
                       </p>
                     ) : null}
                     <VideoActions
                       videoId={video.id}
-                      originalUrl={video.originalUrl}
                       currentStatus={video.decisionStatus}
                     />
                   </div>
