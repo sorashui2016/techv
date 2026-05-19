@@ -11,3 +11,5 @@ This project is a Chinese "科技选题雷达" system for tech/digital content c
 Before making product or implementation changes, read `docs/PROJECT_CONTEXT.md`. It contains the recovered product context from the user's SPEC v3.0 and the current known implementation gaps. Treat that file as project memory and update it whenever important requirements or decisions change.
 
 Current phase: stage 1 only. Do not build the full stage-2 research system, stage-3 material/script production, or real Feishu push unless the user explicitly asks. Keep architecture ready for those later stages.
+
+When implementing the planned "平台探索雷达 / 科技发现流" module, keep it separate from the existing configured-account monitoring flow. Read the dedicated section in `docs/PROJECT_CONTEXT.md` first; the first version is YouTube-only, has independent exploration candidates/statuses, and should not push Feishu yet.

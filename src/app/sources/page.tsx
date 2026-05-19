@@ -43,7 +43,7 @@ export default async function SourcesPage() {
           <div>
             <h1 className="text-2xl font-semibold">信息源管理</h1>
             <p className="mt-1 text-sm text-zinc-600">
-              普通账号每天北京时间 08:00 监测；重要账号在 00:00 / 04:00 / 08:00 / 12:00 / 16:00 / 20:00 监测。
+              普通账号每天北京时间 08:00 监测；重要账号从 08:00 开始每 6 小时监测一次。
             </p>
           </div>
           <MonitorAllButton />

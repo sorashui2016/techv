@@ -159,6 +159,22 @@ function mapVideo(raw: Record<string, unknown>, fallbackUrl: string): ExtractedV
   };
 }
 
+function isInstagramUrl(url: string) {
+  return /instagram\.com/i.test(url);
+}
+
+function isVideoLike(raw: Record<string, unknown>, fallbackUrl: string) {
+  if (!isInstagramUrl(fallbackUrl)) return true;
+  if (/\/(reel|tv)\//i.test(fallbackUrl)) return true;
+  if (typeof raw.duration === "number" && raw.duration > 0) return true;
+  if (typeof raw.vcodec === "string" && raw.vcodec !== "none") return true;
+  if (typeof raw.ext === "string" && !["jpg", "jpeg", "png", "webp"].includes(raw.ext.toLowerCase())) {
+    return true;
+  }
+  if (typeof raw.url === "string" && /\.(mp4|mov)(\?|$)/i.test(raw.url)) return true;
+  return false;
+}
+
 function errorMessage(error: unknown) {
   if (error instanceof Error) {
     const details =
@@ -215,7 +231,11 @@ export async function extractVideo(url: string): Promise<ExtractedVideo> {
   const { stdout } = await execFileAsync(ytDlp, buildVideoArgs(url), {
     maxBuffer: 1024 * 1024 * 16,
   });
-  return mapVideo(JSON.parse(stdout), url);
+  const raw = JSON.parse(stdout);
+  if (!isVideoLike(raw, url)) {
+    throw new Error("Instagram item is not a video.");
+  }
+  return mapVideo(raw, url);
 }
 
 export async function extractRecentVideos(sourceUrl: string): Promise<ExtractedVideo[]> {
@@ -226,6 +246,7 @@ export async function extractRecentVideos(sourceUrl: string): Promise<ExtractedV
 
   const latest = parseRows(stdout).at(0);
   if (!latest) return [];
+  if (!isVideoLike(latest, sourceUrl)) return [];
 
   const lightweightVideo = mapVideo(latest, sourceUrl);
 

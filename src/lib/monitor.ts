@@ -201,7 +201,7 @@ export async function monitorDueSources(now = new Date()) {
 
   const sources = await prisma.source.findMany({ where: { status: "ACTIVE" } });
   const due = sources.filter((source) => {
-    if (source.tier === "IMPORTANT") return [0, 4, 8, 12, 16, 20].includes(hour);
+    if (source.tier === "IMPORTANT") return [2, 8, 14, 20].includes(hour);
     return hour === 8;
   });
 

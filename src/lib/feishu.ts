@@ -55,7 +55,7 @@ export async function sendFeishuVideoMessage(video: FeishuVideoMessage) {
 
   const response = await fetch(webhookUrl, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json; charset=utf-8" },
     body: JSON.stringify(payload),
   });
   const text = await response.text();
