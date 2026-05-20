@@ -3,6 +3,8 @@ import Link from "next/link";
 const links = [
   { href: "/", label: "雷达" },
   { href: "/sources", label: "信息源" },
+  { href: "/explore", label: "探索" },
+  { href: "/research", label: "研究池" },
   { href: "/logs", label: "监测日志" },
 ];
 

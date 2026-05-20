@@ -5,6 +5,7 @@ export const decisionLabels: Record<DecisionStatus, string> = {
   CANDIDATE: "备选",
   DONE: "已做",
   PENDING: "待定",
+  MATERIAL: "素材",
   REJECTED: "不做",
 };
 
@@ -24,4 +25,6 @@ export const platformLabels: Record<Platform, string> = {
   WEB: "网页",
   INSTAGRAM: "Instagram",
   TIKTOK: "TikTok",
+  XIAOHONGSHU: "小红书",
+  WECHAT_VIDEO: "视频号",
 };

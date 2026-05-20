@@ -14,6 +14,8 @@ export class SourceNameInferenceError extends Error {
 
 function detectPlatform(url: string): Platform {
   if (/youtu\.?be|youtube\.com/i.test(url)) return "YOUTUBE";
+  if (/xiaohongshu\.com|xhslink\.com/i.test(url)) return "XIAOHONGSHU";
+  if (/channels\.weixin\.qq\.com|weixin\.qq\.com|wechat/i.test(url)) return "WECHAT_VIDEO";
   if (/instagram\.com/i.test(url)) return "INSTAGRAM";
   if (/tiktok\.com/i.test(url)) return "TIKTOK";
   return "WEB";
@@ -51,6 +53,30 @@ function buildLatestListArgs(url: string) {
 
   args.push(url);
   return args;
+}
+
+function buildSearchArgs(query: string, limit: number) {
+  const args = ["--flat-playlist", "--playlist-end", String(limit), "--dump-json", "--no-warnings"];
+  args.push(`ytsearch${limit}:${query}`);
+  return args;
+}
+
+function buildResearchDownloadArgs(url: string, outputTemplate: string) {
+  return [
+    "--no-warnings",
+    "--no-playlist",
+    "--write-subs",
+    "--write-auto-subs",
+    "--sub-langs",
+    "all,-live_chat",
+    "--convert-subs",
+    "srt",
+    "-f",
+    "bv*+ba/best",
+    "-o",
+    outputTemplate,
+    url,
+  ];
 }
 
 function parseRows(stdout: string) {
@@ -151,6 +177,7 @@ function mapVideo(raw: Record<string, unknown>, fallbackUrl: string): ExtractedV
     description: typeof raw.description === "string" ? raw.description : undefined,
     publishedAt: toDate(raw.timestamp ?? raw.release_timestamp ?? raw.upload_date),
     likeCount: typeof raw.like_count === "number" ? raw.like_count : undefined,
+    viewCount: typeof raw.view_count === "number" ? raw.view_count : undefined,
     sourceName:
       (typeof raw.channel === "string" && raw.channel) ||
       (typeof raw.uploader === "string" && raw.uploader) ||
@@ -255,4 +282,33 @@ export async function extractRecentVideos(sourceUrl: string): Promise<ExtractedV
   } catch {
     return [lightweightVideo];
   }
+}
+
+export async function searchYouTubeVideos(query: string, limit: number): Promise<ExtractedVideo[]> {
+  const ytDlp = process.env.YTDLP_PATH ?? "yt-dlp";
+  const { stdout } = await execFileAsync(ytDlp, buildSearchArgs(query, limit), {
+    maxBuffer: 1024 * 1024 * 32,
+  });
+
+  const rows = parseRows(stdout).slice(0, limit) as Array<Record<string, unknown>>;
+  const videos: ExtractedVideo[] = [];
+
+  for (const row of rows) {
+    const lightweightVideo = mapVideo(row, "https://www.youtube.com");
+    try {
+      videos.push(await extractVideo(lightweightVideo.originalUrl));
+    } catch {
+      videos.push(lightweightVideo);
+    }
+  }
+
+  return videos;
+}
+
+export async function downloadResearchMedia(url: string, outputTemplate: string) {
+  const ytDlp = process.env.YTDLP_PATH ?? "yt-dlp";
+  await execFileAsync(ytDlp, buildResearchDownloadArgs(url, outputTemplate), {
+    maxBuffer: 1024 * 1024 * 32,
+    timeout: 180_000,
+  });
 }

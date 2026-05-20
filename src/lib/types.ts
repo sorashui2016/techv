@@ -10,6 +10,7 @@ export type ExtractedVideo = {
   description?: string;
   publishedAt?: Date;
   likeCount?: number;
+  viewCount?: number;
   sourceName: string;
 };
 

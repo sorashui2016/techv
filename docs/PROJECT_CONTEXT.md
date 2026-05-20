@@ -420,3 +420,212 @@
 - 这份文档是基础参考，不是最终版本。
 - 后续任何需求变更、产品取舍、技术决策，都优先追加到本文件。
 - 如果聊天记录丢失，先阅读 `AGENTS.md`、本文件、`README.md`、`prisma/schema.prisma` 和主要页面/API 文件，再继续开发。
+## 2026-05-19 代码进展：探索雷达第一版
+
+已新增“平台探索雷达 / 科技发现流”的第一版代码，保持独立于现有账号监测模块。
+
+已实现：
+
+- Prisma 新增 `ExploreRule`、`ExploreCandidate`、`ExploreRun`，以及探索规则、候选状态、运行状态相关枚举。
+- 新增 migration：`prisma/migrations/20260519103000_add_explore_radar/migration.sql`，并已对本地 PostgreSQL 执行 `npx.cmd prisma migrate deploy`。
+- 新增 `src/lib/explore.ts`：默认探索规则入库、YouTube 搜索、规则匹配、排除过滤、本地评分、Minimax 分析兜底、候选去重、今日推荐生成、下一条探索选择。
+- 新增 `searchYouTubeVideos()` 到 `src/lib/yt-dlp.ts`，使用 yt-dlp 的 `ytsearch` 获取 YouTube 搜索结果。
+- 新增页面：`/explore`、`/explore/next`、`/explore/rules`。
+- 新增 API：`/api/explore/run`、`/api/explore/rules`、`/api/explore/rules/[id]`、`/api/explore/candidates/[id]/decision`。
+- 新增组件：`ExploreRunButton`、`ExploreCandidateActions`、`ExploreRuleForm`、`ExploreRuleActions`。
+- 新增脚本：`npm.cmd run explore`，用于命令行触发一次探索搜索。
+- 导航增加“探索”入口。
+
+当前第一版限制：
+
+- 探索搜索第一版只支持 YouTube。
+- 规则列表目前支持新增、启用/禁用、删除；完整行内编辑还未做。
+- 探索候选状态第一版独立于首页视频状态池，后续再决定是否打通统一选题池。
+- 今日推荐已做混合选取雏形：优先权威来源、众筹/产品、DIY/Maker，再用高分内容补足。
+- “下一条探索”已做半随机雏形：高分内容为主，权威来源和随机探索作补充。
+- 探索雷达暂不推送飞书，也不接收飞书交互。
+- 尚未设置 08:30 的自动探索计划任务；当前可用 `/explore` 页面按钮或 `npm.cmd run explore` 手动执行。
+
+已验证：
+
+- `npx.cmd prisma generate` 成功。
+- `npm.cmd run lint` 通过。
+- `npm.cmd run build` 通过，包含 `/explore`、`/explore/next`、`/explore/rules` 和新增 API 路由。
+- 本地数据库已有 43 条默认探索规则。
+
+注意：
+
+- 运行探索会调用 yt-dlp 搜索 YouTube，并可能调用 Minimax；网络、YouTube 访问、yt-dlp 可用性、Minimax 配额都会影响运行耗时和成功率。
+- Windows 上 Prisma generate 可能因为 Next dev server 锁住 `query_engine-windows.dll.node` 失败；如果发生，先停掉本地 Node/Next 进程再重新执行。
+
+2026-05-19 追加调整：
+
+- 科技探索内容必须优先保证新鲜度。探索搜索入库时默认跳过发布时间超过两年的视频。
+- `/explore` 今日推荐、最近候选、`/explore/next` 下一条探索都只读取两年内内容；发布时间未知的内容暂时保留，避免平台未返回日期时误删。
+- 探索页和首页的视频发布时间显示增加年份，避免只显示月份/日期导致误判内容新旧。
+
+2026-05-19 追加调整：
+
+- 首页 Dashboard 的“不做”状态池增加“清空不做池”按钮。
+- 该按钮只在筛选状态为 `REJECTED` 时显示；点击后会二次确认，并删除所有 `decisionStatus = REJECTED` 的 `VideoItem` 记录。
+- 清空不做池不会删除信息源 `Source`，也不会影响其他状态池内容。
+
+2026-05-20 追加调整：
+
+- 新增“素材池”状态，用于保存“不会作为独立选题研究，但以后做其他内容可能用得上的通识性素材”。
+- 首页账号监测视频状态 `DecisionStatus` 增加 `MATERIAL`，卡片按钮增加“素材”，首页状态筛选可查看素材池。
+- 探索候选状态 `ExploreCandidateStatus` 增加 `MATERIAL`，探索卡片按钮增加“素材”。
+- 探索首页默认只显示 `UNMARKED` 未标记内容；点击“素材 / 备选 / 待定 / 不做 / 研究”后都会从默认探索流消失。
+- `/explore` 增加状态下拉，可切换查看 `素材`、`备选`、`待定`、`不做`、`研究` 等池子。
+
+## 第二阶段 2A：链接研究、研究池与素材归档预留
+
+第二阶段从用户点击“研究”或手动提交研究链接开始。首页“提交视频链接”仍然用于加入雷达池，不和研究入口混用。
+
+已确认产品决策：
+
+- 研究入口分为：雷达卡片研究、探索卡片研究、手动提交研究链接；飞书发送链接研究先不实现，但预留外部提交模型和入口类型。
+- 研究报告第一版先以 Markdown 存在数据库；进入素材归档阶段后再同步写入项目文件夹。
+- 小红书和视频号作为第一优先级平台，但第一版允许自动解析不足时进入“需要补充材料”状态。
+- 用户补充的小红书/视频号文案可能来自音频转写，可能有错别字、同音字、断句错误、人名品牌名识别错误；研究流程必须先清洗理解，再提取研究对象，并通过后续资料核查实体。
+- 第一版先支持补充文本材料：标题、正文、分享文案、评论、字幕文本、转写文本、相关链接、备注。
+- 视频/音频/截图上传、音频转写、画面关键帧分析、素材下载和项目文件夹归档放到后续 2B/2C。
+- “搜索素材”按钮第一版先占位，只标记为准备搜索素材，不自动下载。
+
+2026-05-20 代码进展：
+
+- Prisma 新增研究项目模型：
+  - `ResearchProject`
+  - `ResearchSupplement`
+  - `ExternalSubmission`
+- Prisma 新增枚举：
+  - `ResearchEntryType`
+  - `ResearchProjectStatus`
+  - `ResearchMaterialStatus`
+  - `ResearchSupplementType`
+  - `ExternalSubmissionSource`
+- `Platform` 新增：
+  - `XIAOHONGSHU`
+  - `WECHAT_VIDEO`
+- 新增 migration：
+  - `20260520103000_add_research_projects`
+  - `20260520104000_add_research_priority_platforms`
+- 新增 `src/lib/research.ts`：
+  - 统一创建研究项目
+  - 从雷达卡片创建研究项目
+  - 从探索候选创建研究项目
+  - 手动链接创建研究项目
+  - 平台识别
+  - 补充文本材料
+  - 第一版 Minimax 研究报告生成
+  - Minimax 不可用时生成兜底报告
+- 新增页面：
+  - `/research`：研究池
+  - `/research/new`：手动提交研究链接
+  - `/research/[id]`：研究项目详情、补充材料、报告、状态操作
+- 新增 API：
+  - `POST /api/research/projects`
+  - `PATCH /api/research/projects/[id]`
+  - `POST /api/research/projects/[id]/run`
+  - `POST /api/research/projects/[id]/supplements`
+  - `POST /api/explore/candidates/[id]/research`
+- 更新原有 `POST /api/videos/[id]/research`：现在创建/返回 `ResearchProject`，而不是旧的 `ResearchTask` 占位。
+- 探索卡片“研究”按钮现在会创建研究项目并跳转 `/research/[id]`。
+- 导航增加“研究池”。
+
+当前 2A 限制：
+
+- 尚未实现真正全网搜索引擎聚合；第一版研究报告基于原始链接信息、雷达/探索已有摘要和用户补充材料生成，并明确提示需核查来源。
+- 小红书/视频号自动解析不足时不会失败，而是进入 `NEEDS_SUPPLEMENT`。
+- 飞书外部提交只预留 `ExternalSubmission` 模型，尚未开放公网回调或飞书事件处理。
+- 素材搜索、下载、转写、翻译、项目素材文件夹归档仍为后续阶段。
+
+已验证：
+
+- `npx.cmd prisma migrate deploy` 成功。
+- `npx.cmd prisma generate` 成功。
+- `npm.cmd run lint` 通过。
+- `npm.cmd run build` 通过。
+
+2026-05-20 追加调整：
+- 研究详情页的“综述报告”正文不再用纯 `<pre>` 死文本显示。
+- 新增 `ReportText` 组件，在保留换行和浅灰背景的同时，自动把报告中的 `http/https` URL 转成可点击链接。
+- 报告里的来源链接现在可以直接新标签页打开原文，方便核查。
+
+2026-05-20 追加调整：
+
+- 小红书/视频号研究不再只停留在“需要补充材料”。点击“开始/重新研究”时会先尽力解析公开元数据；如果内容仍不足，会尝试用公开方式下载媒体文件。
+- 自动媒体解析边界：不使用 cookies，不绕过登录/权限/平台限制；如果无法公开下载，任务不失败，记录为“需要手动补充”。
+- 新增 `ResearchAsset` 模型和相关枚举，用于记录自动解析得到的视频、音频、字幕、关键帧、失败记录或需要手动上传的素材。
+- 自动解析会尝试：
+  - 保存公开可下载的视频/字幕到 `project_materials/`
+  - 读取字幕文件并作为补充材料加入研究
+  - 使用 `ffmpeg` 提取音频
+  - 使用 `ffmpeg` 提取一个关键帧
+- 当前版本还没有真正接入语音转写模型和画面理解模型；提取出来的音频、关键帧会先保存并在研究详情页展示，后续用于 2B 接入转写/视觉分析。
+- 研究详情页新增“自动解析素材”区域，展示自动保存的文件、失败原因或需要手动补充的记录。
+
+2026-05-20 追加调整：
+
+- 综述报告必须列出信息来源链接。生成报告时要求“来源清单”包含来源标题和 URL；没有 URL 时不能编造，只能写“待补充来源链接”。
+- `ResearchProject.sourceList` 会保存原始链接和补充材料中提取到的 URL。
+- 研究详情页新增“来源链接”区域，单独展示可点击来源链接，方便人工核查。
+
+2026-05-20 追加调整：
+
+- 综述报告不应使用 Markdown 表格、加粗星号、斜体符号、任务复选框等复杂 Markdown 标记。
+- 新增 `sanitizeResearchReport()`，保存报告前会自动清理：
+  - Markdown 表格转换为普通列表
+  - `**加粗**`、`__加粗__`、`*斜体*`、`_斜体_`
+  - `- [ ]`、`- [x]` 等任务复选框
+  - 多余分隔线和过多空行
+- 已运行 `scripts/clean-research-reports.ts`，清理数据库中已有研究报告：`Cleaned 3/3 research reports.`
+
+2026-05-20 追加调整：
+
+- 进一步清理综述报告中由表格转换残留的通用字段名，例如 `类别：`、`类型：`、`具体内容：`、`内容方向：`、`名称：`、`说明：`、`角度：` 等。
+- 这些字段名会在保存报告前被移除，只保留自然内容。
+- 已再次运行 `scripts/clean-research-reports.ts` 清理数据库已有报告：`Cleaned 3/3 research reports.`
+
+2026-05-20 追加调整：
+
+- 研究报告中的“报告生成时间”不能由模型自行生成，避免出现错误年份。
+- `sanitizeResearchReport()` 会删除模型输出里的旧“报告生成时间”行。
+- 新增 `normalizeResearchReport()`，由系统按北京时间自动添加真实日期。
+- 已运行 `scripts/clean-research-reports.ts` 修正已有报告：`Cleaned 3/3 research reports.`
+
+## 2026-05-20 追加调整：研究报告迭代与主题确认
+
+新增“继续研究 / 调整方向”机制，用于解决第二阶段报告不是一次定稿的问题。
+
+产品决策：
+- 第一版综述报告是围绕原始视频或链接生成的基础研究。
+- 用户看完报告后，可以继续输入新的调整方向，让系统生成新版报告。
+- 新方向可以是扩展主题、收窄主题、改成合集、增加对比对象、补查某个产品线或案例。
+- 示例：原报告围绕 Apple 无障碍配件设计，用户可以要求扩展为“Apple 无障碍设计合集”，补查 VoiceOver、AssistiveTouch、Live Captions、Magnifier、Switch Control、Personal Voice 等案例。
+- 报告可以反复迭代，直到用户认为主题已经足够明确。
+- 用户点击“设为最终主题”后，研究项目进入 `THEME_CONFIRMED`，素材状态进入 `READY_TO_SEARCH`，再进入后续素材搜索阶段。
+
+代码实现：
+- Prisma 新增 `ResearchReportVersion`，保存每一次报告版本。
+- `ResearchProjectStatus` 新增 `ITERATING` 和 `THEME_CONFIRMED`。
+- 初次运行研究会自动保存 V1。
+- `/research/[id]` 新增“继续研究 / 调整方向”输入区。
+- `/research/[id]` 新增“报告版本”区，展示 V1、V2 等版本，并支持设为最终主题。
+- 新增 API：
+  - `POST /api/research/projects/[id]/iterate`
+  - `POST /api/research/report-versions/[id]/final`
+- 新增组件：
+  - `ResearchIterationForm`
+  - `ResearchReportVersionActions`
+
+当前边界：
+- “继续研究”仍然优先基于已有报告、补充材料和已知来源链接调用 Minimax 生成新版报告。
+- 真正的多搜索引擎全网资料抓取、网页正文抽取和来源可信度聚合还没有完成，后续需要作为 2B 能力补上。
+- “搜索素材”目前仍是占位，只标记准备搜索素材；真正素材搜索、下载、转写、翻译和项目文件夹归档仍在后续阶段。
+
+已验证：
+- `npx.cmd prisma migrate deploy` 成功。
+- `npx.cmd prisma generate` 成功。
+- `npm.cmd run lint` 通过。
+- `npm.cmd run build` 通过。

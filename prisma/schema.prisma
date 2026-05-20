@@ -13,6 +13,8 @@ enum Platform {
   WEB
   INSTAGRAM
   TIKTOK
+  XIAOHONGSHU
+  WECHAT_VIDEO
 }
 
 enum SourceTier {
@@ -35,6 +37,7 @@ enum DecisionStatus {
   CANDIDATE
   DONE
   PENDING
+  MATERIAL
   REJECTED
 }
 
@@ -60,6 +63,105 @@ enum ResearchStatus {
   TODO
   IN_PROGRESS
   DONE
+}
+
+enum ResearchEntryType {
+  RADAR_CARD
+  EXPLORE_CARD
+  MANUAL_LINK
+  FEISHU_LINK
+  API_WEBHOOK
+}
+
+enum ResearchProjectStatus {
+  TODO
+  PARSING
+  NEEDS_SUPPLEMENT
+  SUPPLEMENT_SUBMITTED
+  UNDERSTANDING
+  SEARCHING_TEXT
+  WRITING_REPORT
+  ITERATING
+  REVIEW_PENDING
+  THEME_CONFIRMED
+  WORTH_DOING
+  PENDING
+  NOT_DOING
+  FAILED
+}
+
+enum ResearchMaterialStatus {
+  NOT_STARTED
+  READY_TO_SEARCH
+  SEARCHING
+  DOWNLOADING
+  TRANSCRIBING
+  TRANSLATING
+  ORGANIZING
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
+enum ResearchSupplementType {
+  TITLE
+  BODY
+  SHARE_TEXT
+  COMMENT
+  TRANSCRIPT
+  SUBTITLE
+  LINK
+  NOTE
+}
+
+enum ResearchAssetType {
+  VIDEO
+  AUDIO
+  IMAGE
+  SUBTITLE
+  TRANSCRIPT
+  KEYFRAME
+  OTHER
+}
+
+enum ResearchAssetStatus {
+  SAVED
+  FAILED
+  NEEDS_MANUAL_UPLOAD
+}
+
+enum ExternalSubmissionSource {
+  MANUAL_WEB
+  FEISHU_MESSAGE
+  FEISHU_CARD_ACTION
+  API_WEBHOOK
+}
+
+enum ExploreRuleType {
+  SEARCH
+  BOOST
+  DEMOTE
+  EXCLUDE
+  AUTHORITY
+}
+
+enum ExploreRuleStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum ExploreCandidateStatus {
+  UNMARKED
+  CANDIDATE
+  PENDING
+  MATERIAL
+  REJECTED
+  RESEARCH
+}
+
+enum ExploreRunStatus {
+  SUCCESS
+  FAILED
 }
 
 model Source {
@@ -114,6 +216,7 @@ model VideoItem {
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
   researchTasks       ResearchTask[]
+  researchProjects    ResearchProject[]
   pushEvents          PushEvent[]
 
   @@index([detectedAt])
@@ -163,4 +266,175 @@ model PushEvent {
   updatedAt   DateTime   @updatedAt
 
   @@index([provider, status])
+}
+
+model ExploreRule {
+  id          String            @id @default(cuid())
+  keyword     String
+  type        ExploreRuleType
+  category    String
+  weight      Int               @default(1)
+  platform    Platform          @default(YOUTUBE)
+  status      ExploreRuleStatus @default(ACTIVE)
+  notes       String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@index([type, status])
+  @@index([platform, status])
+}
+
+model ExploreCandidate {
+  id                   String                 @id @default(cuid())
+  platform             Platform
+  platformContentId    String?
+  originalUrl          String                 @unique
+  thumbnailUrl         String?
+  originalTitle        String
+  chineseTitle         String?
+  description          String?
+  chineseSummary       String?
+  publishedAt          DateTime?
+  likeCount            Int?
+  viewCount            Int?
+  sourceName           String
+  sourceType           String?
+  score                Int                    @default(0)
+  scoreReason          String?
+  tags                 Json?
+  matchedRules         Json?
+  recommendationReason String?
+  status               ExploreCandidateStatus @default(UNMARKED)
+  isTodayPick          Boolean                @default(false)
+  todayPickDate        DateTime?
+  discoveredAt         DateTime               @default(now())
+  lastSeenAt           DateTime               @default(now())
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  researchProjects     ResearchProject[]
+
+  @@index([discoveredAt])
+  @@index([status])
+  @@index([isTodayPick, todayPickDate])
+  @@index([platform, platformContentId])
+}
+
+model ResearchProject {
+  id                   String                 @id @default(cuid())
+  entryType            ResearchEntryType
+  status               ResearchProjectStatus  @default(TODO)
+  materialStatus       ResearchMaterialStatus @default(NOT_STARTED)
+  originalUrl          String
+  platform             Platform?
+  sourceVideoId        String?
+  sourceVideo          VideoItem?             @relation(fields: [sourceVideoId], references: [id], onDelete: SetNull)
+  exploreCandidateId   String?
+  exploreCandidate     ExploreCandidate?      @relation(fields: [exploreCandidateId], references: [id], onDelete: SetNull)
+  title                String?
+  oneLineConclusion    String?
+  summary              String?
+  researchTarget       String?
+  targetKeywords       Json?
+  reportMarkdown       String?
+  sourceList           Json?
+  recommendation       String?
+  projectFolderPath    String?
+  errorMessage         String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  supplements          ResearchSupplement[]
+  assets               ResearchAsset[]
+  reportVersions       ResearchReportVersion[]
+  externalSubmissions  ExternalSubmission[]
+
+  @@index([status])
+  @@index([materialStatus])
+  @@index([entryType])
+  @@index([sourceVideoId])
+  @@index([exploreCandidateId])
+  @@index([createdAt])
+}
+
+model ResearchReportVersion {
+  id              String          @id @default(cuid())
+  projectId       String
+  project         ResearchProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  versionNumber   Int
+  userInstruction String?
+  theme           String?
+  reportMarkdown  String
+  sourceList      Json?
+  isCurrent       Boolean         @default(false)
+  isFinal         Boolean         @default(false)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([projectId])
+  @@index([projectId, versionNumber])
+  @@index([isCurrent])
+  @@index([isFinal])
+}
+
+model ResearchSupplement {
+  id          String                 @id @default(cuid())
+  projectId   String
+  project     ResearchProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type        ResearchSupplementType
+  content     String
+  notes       String?
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  @@index([projectId])
+  @@index([type])
+}
+
+model ResearchAsset {
+  id          String              @id @default(cuid())
+  projectId   String
+  project     ResearchProject     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type        ResearchAssetType
+  status      ResearchAssetStatus @default(SAVED)
+  title       String?
+  sourceUrl   String?
+  localPath   String?
+  notes       String?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@index([projectId])
+  @@index([type])
+  @@index([status])
+}
+
+model ExternalSubmission {
+  id          String                   @id @default(cuid())
+  source      ExternalSubmissionSource
+  sender      String?
+  text        String?
+  urls        Json?
+  attachments Json?
+  projectId   String?
+  project     ResearchProject?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  @@index([source])
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+model ExploreRun {
+  id                String           @id @default(cuid())
+  status            ExploreRunStatus
+  startedAt         DateTime         @default(now())
+  finishedAt        DateTime?
+  searchedRuleCount Int              @default(0)
+  candidateCount    Int              @default(0)
+  newCandidateCount Int              @default(0)
+  errorMessage      String?
+  createdAt         DateTime         @default(now())
+
+  @@index([startedAt])
+  @@index([status])
 }

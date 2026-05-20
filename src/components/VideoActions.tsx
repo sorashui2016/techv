@@ -7,6 +7,7 @@ const decisions: Array<{ value: DecisionStatus; label: string }> = [
   { value: "CANDIDATE", label: "备选" },
   { value: "DONE", label: "已做" },
   { value: "PENDING", label: "待定" },
+  { value: "MATERIAL", label: "素材" },
   { value: "REJECTED", label: "不做" },
 ];
 
