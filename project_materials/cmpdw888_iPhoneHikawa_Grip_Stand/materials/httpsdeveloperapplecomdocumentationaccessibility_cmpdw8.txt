@@ -1,0 +1,4 @@
+标题：报告中提到的链接：https://developer.apple.com/documentation/accessibility
+链接：https://developer.apple.com/documentation/accessibility
+备注：从当前研究报告正文中提取，进入素材池后需要人工核查。
+说明：该条素材不是可直接下载的视频直链，系统先保存为链接归档。实际用于视频前仍需人工打开来源并核查版权、授权和可用性。

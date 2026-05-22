@@ -65,12 +65,7 @@ function buildResearchDownloadArgs(url: string, outputTemplate: string) {
   return [
     "--no-warnings",
     "--no-playlist",
-    "--write-subs",
-    "--write-auto-subs",
-    "--sub-langs",
-    "all,-live_chat",
-    "--convert-subs",
-    "srt",
+    "--ignore-errors",
     "-f",
     "bv*+ba/best",
     "-o",

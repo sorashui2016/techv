@@ -400,6 +400,159 @@
 
 - `npm.cmd run lint` 通过。
 - `npm.cmd run build` 通过。
+
+## 2026-05-22 追加调整：素材发布时间回填与卡片按钮简化
+
+问题与修正：
+- 素材列表中视频发布时间显示“未知”，主要原因不是 yt-dlp 抓不到发布时间，而是旧素材已有中文标题和封面后会跳过视频元数据刷新，导致 `publishedAt` 没有被回填。
+- `searchResearchMaterials()` 已调整为：视频素材只要缺少中文标题、封面或发布时间任一字段，就重新读取视频元数据并回填。
+- 素材卡片操作按钮简化，去掉“可用”和“查授权”，普通列表只保留“下载”和“不用”。标为“不用”的素材继续进入垃圾箱，可恢复或清空。
+
+## 2026-05-22 追加调整：自动解析素材入口与下载目录规则
+
+产品行为：
+- `ResearchAsset` 表示已经保存到本地、解析失败或需要手动补充的素材文件记录；它不是素材候选池。
+- 研究详情页不再展开展示自动解析素材明细，只保留“已保存素材记录”数量、本地目录和“查看详情”入口。
+- 新增 `/research/[id]/assets` 页面，用于单独查看自动解析/已下载素材详情。
+- 新生成的项目素材目录使用“递增数字 + 主题缩写”命名，例如 `001_Hikawa_Grip`。
+- 新下载的素材文件直接放进项目素材目录根部，不再拆分到 `videos/`、`audio/`、`images/`、`materials/` 等子目录。
+- 已经存在 `projectFolderPath` 的旧项目继续使用原目录，避免移动旧文件导致数据库记录失效；但后续新增下载会尽量放在该项目目录根部。
+
+## 2026-05-22 追加调整：下载视频分辨率展示
+
+问题与修正：
+- 之前系统只记录下载文件路径、类型和状态，没有解析本地视频文件的真实媒体信息，所以页面无法确认下载到的是多高分辨率。
+- 新增 `readVideoMediaInfo()`，在 `/research/[id]/assets` 详情页对本地视频文件调用 `ffprobe`，展示实际分辨率、视频编码和时长。
+- 如果本机缺少 `ffprobe`、文件不存在或文件无法读取，页面会显示无法读取原因。
+- yt-dlp 下载命令仍使用 `bv*+ba/best` 优先下载最高可用视频+音频；分辨率展示用于核查最终落盘文件是否符合预期。
+
+## 2026-05-22 追加调整：素材搜索绑定当前报告版本
+
+产品规则：
+- 素材搜索必须基于用户明确设置的最终主题版本；只有存在 `isFinal = true` 的 `ResearchReportVersion` 才允许搜索。
+- 如果用户继续研究并生成新版报告，需要先把新版报告“设置为最终主题”，再点“重新搜索”，系统才会基于新版最终报告重新生成素材候选。
+- 未设置最终主题时，素材搜索前端禁用，后端接口也会拒绝并提示先设置最终主题。
+- “补充搜索”只追加或更新新候选，不清理旧候选。
+- “重新搜索”会清理未下载、未下载中、未进垃圾箱的普通视频/图片候选；已下载素材和垃圾箱素材保留，避免误删已经落盘或已淘汰归档的内容。
+- 素材搜索接口返回本次使用的最终报告版本号，前端提示“基于最终版 Vx”。
+
+## 2026-05-23 追加调整：一键下载跳过已下载素材
+
+产品规则：
+- 已下载素材仍可展示在素材候选列表中，方便看到它来自哪个链接、状态是什么。
+- “一键下载剩余素材”只处理未下载或下载失败可重试的视频/图片素材。
+- 状态为 `DOWNLOADED`、`DOWNLOADING`、`REJECTED` 的素材会被批量下载跳过，避免重复下载和覆盖本地文件。
+- 已下载素材卡片使用不同底色和状态标签，方便和未下载素材区分。
+- 单条素材如果已经是 `DOWNLOADED`，按钮显示“重新下载”并保留可点击；适用于本地文件误删或换电脑重新下载。
+- 后端接口只会跳过 `DOWNLOADING`；`DOWNLOADED` 的单条重新下载请求允许再次执行。
+
+## 2026-05-23 追加修正：空素材搜索的查询词来源
+
+问题与修正：
+- 素材搜索输入框为空时，仍会基于最终报告版本自动搜索。
+- 旧逻辑会优先使用最终版本的 `theme`，但 `theme` 有时是“加入/补充/调整……”一类编辑指令，不适合作为素材搜索主题，容易搜出错误视频。
+- `youtubeMaterialQueries()` 已调整为优先读取最终报告正文里的“素材线索”段落，并从该段拆分出具体搜索词。
+- “素材线索”中的英文引号关键词会直接作为搜索词，例如 `Apple Personal Voice ALS story`、`Apple Eye Tracking iOS 18 demo`。
+- “素材线索”中的中文素材需求会拆成聚焦查询，例如 Apple 官方 YouTube、WWDC session、iOS 设置菜单录屏、放大镜、实时字幕、Switch Control 等。
+- 只有当“素材线索”缺失时，才退回报告标题、项目标题或非指令型 theme。
+- 用户手动输入的素材搜索提示词仍会优先合入查询。
+
+## 2026-05-23 追加规则：报告必须包含素材线索
+
+产品规则：
+- 每次初始研究报告和继续研究生成的新报告，都必须包含标题严格为“素材线索”的独立段落。
+- “素材线索”用于下一阶段素材搜索，必须写具体可搜索的画面需求、视频来源方向或英文关键词。
+- 报告生成提示词已明确要求“素材线索”不能改名为“可作为素材线索的内容”等其他标题。
+- 兜底报告也会生成“素材线索”段落。
+- 如果模型仍然漏掉“素材线索”，系统在保存报告前会自动补入一个基础“素材线索”段落，避免素材搜索没有依据。
+
+## 2026-05-23 最新上下文同步：最终报告与素材搜索
+
+当前已经确认的核心业务规则：
+- 报告版本里的“设置为最终主题”是进入素材搜索的前置动作；没有最终版本时不能搜索素材。
+- 素材搜索不能使用 `theme` 作为主要依据，因为 `theme` 常常只是用户为了生成新版报告输入的提示词，例如“加入/补充/调整……”。
+- 补充搜索和重新搜索在输入框为空时，都必须优先读取最终版综述报告里的“素材线索”段落。
+- “素材线索”是给第三阶段素材搜索用的结构化桥梁，必须出现在每次报告里。
+- 重新搜索会基于最终版报告的“素材线索”重新生成素材候选；补充搜索会在现有素材基础上追加。
+- 重新搜索清理范围只包括未下载、未下载中、未进垃圾箱的普通视频/图片候选；已下载素材和垃圾箱素材保留。
+- 已下载素材仍显示在素材候选列表里，但使用不同底色区分；单条按钮显示“重新下载”，一键下载会跳过已下载素材。
+- `/research/[id]/assets` 是已下载/自动解析素材详情页，可查看本地文件、分辨率、编码和时长。
+
+后续如果恢复上下文，优先检查：
+- `src/lib/research.ts` 中的 `videoBriefSchemaPrompt`、`ensureMaterialCluesSection()`、`youtubeMaterialQueries()`、`searchResearchMaterials()`。
+- `src/components/ResearchMaterialSearchForm.tsx` 中未设置最终主题时的禁用逻辑。
+- `src/app/research/[id]/page.tsx` 中素材卡片已下载状态的底色与“重新下载”入口。
+- `src/app/research/[id]/assets/page.tsx` 和 `src/lib/media-info.ts` 中视频分辨率读取逻辑。
+
+## 2026-05-22 追加调整：素材搜索指令与发布时间
+
+产品行为：
+- 素材候选池新增独立搜索表单。
+- 用户可以输入素材搜索方向，例如“只找官方发布会视频、产品实拍，不要评测”。
+- 搜索按钮分为：
+  - “补充搜索”：保留当前素材池，追加新候选。
+  - “重新搜索”：删除当前未下载、未进垃圾箱的普通视频/图片候选，再按新指令生成。
+- 素材卡片显示发布时间；如果平台元数据没有返回发布时间，则显示“未知”。
+- 顶部项目动作区不再放“搜索素材”按钮，素材搜索入口移入素材候选池内部。
+
+代码实现：
+- `ResearchMaterial` 新增 `publishedAt` 字段。
+- 新增 migration：`20260522093000_add_material_published_at`。
+- `POST /api/research/projects/[id]/materials/search` 支持请求体：
+  - `instruction?: string`
+  - `mode?: "append" | "replace"`
+- 新增组件 `ResearchMaterialSearchForm`。
+- `youtubeMaterialQueries()` 会把用户搜索指令合入 YouTube 查询词。
+
+已验证：
+- `npx.cmd prisma migrate deploy` 成功。
+- `npx.cmd prisma generate` 成功。
+- `npm.cmd run lint` 通过。
+- `npm.cmd run build` 通过。
+
+## 2026-05-22 追加修正：素材视频下载字幕失败降级
+
+问题：
+- 一条 YouTube 素材下载失败，原因不是视频本体不可下载，而是 yt-dlp 下载自动字幕时遇到 `HTTP Error 429: Too Many Requests`。
+- 旧下载命令包含 `--write-subs --write-auto-subs --sub-langs all,-live_chat --convert-subs srt`，字幕失败会导致整条素材失败。
+
+修正：
+- `buildResearchDownloadArgs()` 改为视频优先下载，不再强制下载字幕。
+- 增加 `--ignore-errors`，避免字幕/附属资源错误阻断视频素材保存。
+- 字幕、转写和画面理解后续应作为单独步骤处理，不应阻塞素材视频下载。
+
+已验证：
+- 失败素材 `Designing the Hikawa Grip & Stand for iPhone: an accessible accessory` 重新下载成功，状态变为 `DOWNLOADED`。
+- 文件已保存到 `project_materials/cmpdw888_iPhoneHikawa_Grip_Stand/materials/cmpeqyw520001npr8srge76bq/`。
+- `npm.cmd run lint` 通过。
+- `npm.cmd run build` 通过。
+
+## 2026-05-22 追加调整：素材池只保留视频/图片素材
+
+产品规则：
+- 素材链接池只用于提供视频素材和图片素材。
+- 研究报告中的官网、文档、文章等来源链接继续属于研究来源，不应显示在素材候选池。
+- 如果报告链接中没有具体视频页、视频直链、图片直链，就不要进入素材候选池。
+- 素材卡片展示时要显示封面或合适截图；标题优先显示中文标题。
+- 素材卡片不再显示“用途”和“版权风险”长文本，避免干扰筛选；版权判断留在后续使用/下载阶段处理。
+
+代码实现：
+- `ResearchMaterial` 新增字段：
+  - `chineseTitle`
+  - `thumbnailUrl`
+- 新增 migration：`20260522090000_add_material_display_fields`。
+- `searchResearchMaterials()` 收紧素材识别：
+  - 只接受具体 YouTube watch 页、youtu.be 短链、Bilibili 视频页、Vimeo 视频页、视频文件直链、图片文件直链等。
+  - 不再因为 URL 路径里包含 `videos`、`image` 等泛词就当作素材。
+  - 搜索时会清理旧的误判视频/图片素材候选。
+- YouTube 搜索结果会保存具体视频 URL、封面图和中文标题；中文标题使用 Minimax 翻译，失败时保留原始标题。
+- `/research/[id]` 素材候选池只显示非垃圾箱的 `VIDEO` / `IMAGE` 类型素材，并以封面 + 中文标题 + 原链接 + 操作按钮形式展示。
+- 一键下载只处理非 `REJECTED` 且类型为 `VIDEO` / `IMAGE` 的素材。
+
+已验证：
+- 对本地最新研究项目重新搜索素材后，素材池只剩具体 YouTube 视频链接，官网文档/报告研究链接不再显示。
+- `npm.cmd run lint` 通过。
+- `npm.cmd run build` 通过。
 - 本地 `http://localhost:3000` 可访问。
 - `/sources` 和 `/logs` 可访问。
 
@@ -627,5 +780,128 @@
 已验证：
 - `npx.cmd prisma migrate deploy` 成功。
 - `npx.cmd prisma generate` 成功。
+- `npm.cmd run lint` 通过。
+- `npm.cmd run build` 通过。
+## 2026-05-21 追加记录：为避免对话丢失的最新同步
+
+2026-05-21 追加产品调整：
+- 第二阶段报告不应该像论文或长篇研究综述。用户的目标是做视频，不是做学术研究。
+- 报告核心目标改为“视频选题准备稿”：先把产品、技术或新闻本身讲清楚，再补充为了理解它所需的相关周边信息。
+- 默认报告长度控制在 1200-1800 字以内；复杂内容最多不超过 2500 字。
+- 新报告结构改为：一句话结论、这个东西到底是什么、关键细节、为什么适合做视频、相关周边、可拍视频角度、素材线索、待核查问题、来源链接。
+- 报告里不再要求长篇历史背景、行业综述、完整发展脉络、学术式争议分析，除非这些内容直接影响视频判断。
+- 初次研究和继续研究/报告迭代都要优先按这个短结构生成。
+
+2026-05-21 代码调整：
+- `src/lib/research.ts` 新增 `videoBriefSchemaPrompt`，作为新的报告输出结构。
+- 初次研究 `callResearchModel()` 和继续研究 `callIterationModel()` 都改为优先使用“视频选题准备稿”结构。
+- Minimax 报告生成 `max_completion_tokens` 下调到 3000，减少模型写成长论文的倾向。
+
+今天确认并补充的关键记录：
+- 研究详情页里的“综述报告”正文，报告中的 `http/https` 链接现在会自动转成可点击链接。
+- 用户在报告里看到的来源链接，应该能够直接打开原文，而不只是纯文本显示；这一点已经实现。
+- 研究报告区域目前使用 `ReportText` 组件渲染，保留换行、浅灰底、黑字，同时把 URL 链接化。
+- 研究详情页原本单独的“来源链接”列表仍然保留，继续作为结构化核查入口。
+- 当前本地开发服务之前已经恢复并验证过，`/research` 页面可访问。
+
+当前第二阶段研究流的最新理解：
+- 第一版报告先围绕原始视频/链接做基础研究。
+- 如果用户看完后想扩展主题、改成合集、收窄方向或补查某个分支，可以继续输入新的研究方向，生成 V2、V3 等新版报告。
+- 只有在用户确认主题后，项目才进入“准备搜索素材”状态。
+- “搜索素材”目前仍是占位按钮，真正的素材搜索、下载、转写、翻译和归档还属于后续开发阶段。
+
+为了防止后续聊天记录再丢，继续约定：
+- 只要当天做了产品决策、页面行为修改、数据结构调整或流程变更，都要优先追加到 `docs/PROJECT_CONTEXT.md`。
+- 明天如果需要快速恢复上下文，优先读取 `AGENTS.md` 和 `docs/PROJECT_CONTEXT.md`，再看研究相关页面与 `src/lib/research.ts`。
+
+## 2026-05-21 追加调整：第三阶段 3A 素材候选池 MVP
+
+已开始第三阶段素材搜集，但先做“小闭环版”，不直接进入完整素材生产系统。
+
+产品边界：
+- 第三阶段 3A 从已确认主题或已有研究项目出发，点击“搜索素材”后生成素材候选池。
+- 第一版不做自动下载、批量搬运、音频转写、画面理解、自动剪辑或项目文件夹归档。
+- 素材候选主要来自：研究项目原始链接、报告来源链接、报告正文 URL、围绕主题自动生成的 YouTube/图片/官方资料/观点反馈搜索入口。
+- 每条素材候选必须提示用途和版权风险；实际用于视频前必须人工核查授权、署名和平台规则。
+- 素材候选和自动解析素材分开：`ResearchAsset` 继续表示自动解析/保存到本地的媒体文件、字幕、关键帧等；`ResearchMaterial` 表示可人工筛选的素材线索和搜索入口。
+
+代码实现：
+- Prisma 新增 `ResearchMaterial` 模型。
+- Prisma 新增枚举：
+  - `ResearchMaterialType`
+  - `ResearchMaterialItemStatus`
+- 新增 migration：`20260521090000_add_research_materials`。
+- 新增 `searchResearchMaterials(projectId)`，用于生成/更新素材候选池。
+- 新增 API：
+  - `POST /api/research/projects/[id]/materials/search`
+  - `PATCH /api/research/materials/[id]`
+- `/research/[id]` 新增“素材候选池”区域，显示素材类型、状态、来源链接、用途、版权风险、备注，并支持标记“可用 / 查授权 / 不用”。
+- 研究详情页的“搜索素材”按钮现在会真实调用素材候选生成，不再只是占位。
+
+已验证：
+- `npx.cmd prisma generate` 成功。
+- `npx.cmd prisma migrate deploy` 成功。
+- `npm.cmd run lint` 通过。
+- `npm.cmd run build` 通过。
+- 本地最新研究项目已触发一次素材候选生成：生成 9 条候选。
+
+2026-05-21 追加修正：
+- 用户指出搜索结果页不是最终素材，不能把 YouTube/Google/Bing 的 search/list 页面当作素材候选。
+- 已修正 `searchResearchMaterials()`：不再入库 `youtube.com/results`、`google.com/search`、`bing.com/images/search` 等搜索列表页。
+- “搜索素材”现在会用 yt-dlp 的 YouTube 搜索解析出具体 `youtube.com/watch?v=...` 视频结果，再作为素材候选入库。
+- 已加入清理逻辑：重新搜索素材时会删除旧的搜索页候选。
+- 当前可下载边界：搜索列表页不能直接下载；只有具体视频 URL 才能用 yt-dlp 尝试下载/解析。自动批量下载所有候选仍不做，后续应只对用户标记“可用”的具体视频增加下载/解析动作。
+
+2026-05-21 追加实现：
+- 素材候选池新增单条“下载”按钮。
+- 素材候选池新增“一键下载剩余素材”按钮，批量处理所有未标记 `REJECTED` / “不用”的候选。
+- `ResearchMaterialItemStatus` 新增：
+  - `DOWNLOADING`
+  - `DOWNLOADED`
+  - `FAILED`
+- 新增 API：
+  - `POST /api/research/materials/[id]/download`
+  - `POST /api/research/projects/[id]/materials/download`
+- 下载行为边界：
+  - `VIDEO` 类型使用 yt-dlp 下载到项目素材目录，并登记为 `ResearchAsset`。
+  - `IMAGE` 类型只对直接图片链接尝试保存图片。
+  - 文章、官方文档、产品页、社媒链接等非直接媒体素材先保存为本地链接说明文件，并登记为 `ResearchAsset(OTHER)`；这只是归档线索，不表示已经取得可直接使用的媒体素材。
+- 已验证非视频素材归档链路：一个 `OFFICIAL_DOC` 素材成功变为 `DOWNLOADED`。
+
+## 2026-05-22 追加调整：报告版本防重复与折叠展示
+
+问题：
+- 继续研究表单此前每提交一次都会新增一个 `ResearchReportVersion`。
+- 如果同一条继续研究方向在短时间内被重复提交，会出现 V2、V3、V4... 多个几乎重复版本。
+- 本地检查发现某个研究项目中，同一条指令在几十秒内生成了 V2-V9；这解释了页面里版本数量异常多的问题。
+
+修正：
+- `saveCurrentReportVersion()` 增加短时间重复防护：同一项目、同一 `userInstruction` 在 2 分钟内重复保存时，不再新增版本号，而是更新最近一个版本并保持为当前版本。
+- `ResearchIterationForm` 增加 `useRef` 提交锁，避免按钮状态尚未刷新时被连续点击触发多次请求。
+- `/research/[id]` 的报告版本区域默认只显示当前版本；历史版本折叠到 `<details>` 里，减少页面占用。
+- 新增脚本 `scripts/clean-duplicate-report-versions.ts`，默认 dry-run，仅识别“同一项目、同一指令、2 分钟内连续生成”的旧重复版本；加 `--apply` 才会真正删除。
+
+已验证：
+- dry-run 显示可识别 7 个重复报告版本，但尚未自动删除数据库记录。
+- `npm.cmd run lint` 通过。
+- `npm.cmd run build` 通过。
+
+## 2026-05-22 追加调整：素材垃圾箱
+
+产品行为：
+- 素材候选标记为“不用”后，不再出现在普通素材候选列表中。
+- `REJECTED` 状态的素材进入“垃圾箱”折叠区。
+- 垃圾箱里的素材可以单条“恢复”，恢复后状态改回 `CANDIDATE`，重新出现在普通列表。
+- 垃圾箱可以手动清空；清空会永久删除垃圾箱内的素材候选记录。
+- 一键下载剩余素材只统计和处理非 `REJECTED` 素材。
+
+代码实现：
+- `/research/[id]` 将素材拆成 `activeMaterials` 和 `trashedMaterials`。
+- 新增组件 `ResearchMaterialTrashActions.tsx`：
+  - `ResearchMaterialRestoreButton`
+  - `ResearchMaterialEmptyTrashButton`
+- 新增 API：`DELETE /api/research/projects/[id]/materials/trash`，用于删除该项目所有 `REJECTED` 素材候选。
+
+已验证：
 - `npm.cmd run lint` 通过。
 - `npm.cmd run build` 通过。

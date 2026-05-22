@@ -130,6 +130,28 @@ enum ResearchAssetStatus {
   NEEDS_MANUAL_UPLOAD
 }
 
+enum ResearchMaterialType {
+  VIDEO
+  IMAGE
+  ARTICLE
+  PRODUCT_PAGE
+  OFFICIAL_DOC
+  SOCIAL_POST
+  DATASET
+  SEARCH_QUERY
+  OTHER
+}
+
+enum ResearchMaterialItemStatus {
+  CANDIDATE
+  SELECTED
+  NEEDS_LICENSE_CHECK
+  DOWNLOADING
+  DOWNLOADED
+  FAILED
+  REJECTED
+}
+
 enum ExternalSubmissionSource {
   MANUAL_WEB
   FEISHU_MESSAGE
@@ -344,6 +366,7 @@ model ResearchProject {
   updatedAt            DateTime               @updatedAt
   supplements          ResearchSupplement[]
   assets               ResearchAsset[]
+  materials            ResearchMaterial[]
   reportVersions       ResearchReportVersion[]
   externalSubmissions  ExternalSubmission[]
 
@@ -402,6 +425,29 @@ model ResearchAsset {
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
 
+  @@index([projectId])
+  @@index([type])
+  @@index([status])
+}
+
+model ResearchMaterial {
+  id            String                 @id @default(cuid())
+  projectId     String
+  project       ResearchProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type          ResearchMaterialType
+  status        ResearchMaterialItemStatus @default(CANDIDATE)
+  title         String
+  chineseTitle  String?
+  sourceUrl     String
+  thumbnailUrl  String?
+  publishedAt   DateTime?
+  usage         String?
+  copyrightRisk String?
+  notes         String?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+
+  @@unique([projectId, sourceUrl])
   @@index([projectId])
   @@index([type])
   @@index([status])

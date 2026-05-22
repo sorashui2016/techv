@@ -1,0 +1,26 @@
+⨯ ReferenceError: assetTypeLabels is not defined
+    at <unknown> (src\app\research\[id]\page.tsx:300:54)
+    at Array.map (<anonymous>)
+    at ResearchDetailPage (src\app\research\[id]\page.tsx:298:39)
+  298 | ...            {project.assets.map((asset) => (
+  299 | ...              <tr key={asset.id} className="border-t border-zinc-100">
+> 300 | ...                <td className="px-3 py-2">{assetTypeLabels[asset.type]}</td>
+      |                                               ^
+  301 | ...                <td className="px-3 py-2">{assetStatusLabels[asset.status]}</td>
+  302 | ...                <td className="px-3 py-2 break-all text-zinc-700">
+  303 | ...                  {asset.localPath ?? asset.sourceUrl ?? asset.title ?? "未保存本地文件"} {
+  digest: '1453578168'
+}
+⨯ ReferenceError: assetTypeLabels is not defined
+    at <unknown> (src\app\research\[id]\page.tsx:300:54)
+    at Array.map (<anonymous>)
+    at ResearchDetailPage (src\app\research\[id]\page.tsx:298:39)
+  298 | ...            {project.assets.map((asset) => (
+  299 | ...              <tr key={asset.id} className="border-t border-zinc-100">
+> 300 | ...                <td className="px-3 py-2">{assetTypeLabels[asset.type]}</td>
+      |                                               ^
+  301 | ...                <td className="px-3 py-2">{assetStatusLabels[asset.status]}</td>
+  302 | ...                <td className="px-3 py-2 break-all text-zinc-700">
+  303 | ...                  {asset.localPath ?? asset.sourceUrl ?? asset.title ?? "未保存本地文件"} {
+  digest: '1453578168'
+}

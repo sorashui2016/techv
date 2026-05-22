@@ -4,17 +4,19 @@ import type {
   Prisma,
   ResearchAssetType,
   ResearchEntryType,
+  ResearchMaterialType,
   ResearchProject,
   ResearchProjectStatus,
   ResearchSupplementType,
   VideoItem,
 } from "@prisma/client";
 import { execFile } from "node:child_process";
-import { readdir, mkdir, readFile } from "node:fs/promises";
+import { readdir, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { prisma } from "./db";
-import { downloadResearchMedia, extractVideo } from "./yt-dlp";
+import { analyzeVideoWithMinimax } from "./minimax";
+import { downloadResearchMedia, extractVideo, searchYouTubeVideos } from "./yt-dlp";
 
 const execFileAsync = promisify(execFile);
 const MATERIAL_ROOT = "project_materials";
@@ -73,6 +75,30 @@ const reportSchemaPrompt = `
 13. 需要继续核查的问题
 14. 是否建议进入素材搜索阶段
 15. 来源清单：必须列出信息来源标题和 URL。没有 URL 的来源不要编造链接，只能写“待补充来源链接”。
+`;
+
+const videoBriefSchemaPrompt = reportSchemaPrompt && `
+请生成一份“视频选题准备稿”，不是论文式研究报告。目标是帮创作者快速看懂这个产品、技术或新闻，判断能不能做视频，以及下一步还要补查什么。
+
+写作要求：
+- 中文输出，默认 1200-1800 字以内；信息确实复杂时最多不超过 2500 字。
+- 不要写成学术综述，不要大段铺历史，不要为了完整而扩写。
+- 不要使用 Markdown 表格、加粗星号、斜体、复选框或任务列表。
+- 不要自己编写“报告生成时间”，系统会自动添加。
+- 只写和做视频决策有关的信息。
+- 不确定的内容要明确写“待核查”，不要编造事实或来源链接。
+- 必须包含一个标题严格为“素材线索”的独立段落，不能改名为“可作为素材线索的内容”或其他名称。
+
+报告结构必须按下面顺序：
+1. 一句话结论：这是什么，值不值得继续看。
+2. 这个东西到底是什么：产品/技术/新闻的名称、主体、用途、当前状态。
+3. 关键细节：最多 6 条，写清功能、技术点、价格/时间/发布方/使用场景等真正重要的信息。
+4. 为什么可能适合做视频：看点、冲突点、新奇点、和普通人的关系。
+5. 相关周边：为了讲清它，还需要了解哪些公司、人物、同类产品、旧技术、行业背景或延伸案例。
+6. 可拍视频角度：给 3-5 个具体选题方向，每个方向一句话说明。
+7. 素材线索：必须写具体可搜索的素材需求和搜索关键词。至少 3 条，优先包含官方 YouTube/发布会/WWDC/演示视频/屏幕录制/真实案例/产品图等；如果能想到英文关键词，必须直接写出，例如 “Apple Personal Voice ALS story”。
+8. 待核查问题：只列真正会影响视频判断的问题。
+9. 来源链接：必须列出信息来源标题和 URL；没有 URL 的来源不要编造链接，只能写“待补充来源链接”。
 `;
 
 export function detectResearchPlatform(url: string): Platform {
@@ -215,6 +241,10 @@ function fallbackReport(context: ResearchContext, reason?: string) {
     "- 是否存在官网、新闻稿、论文、权威媒体报道或品牌资料？",
     "- 这个内容是否有足够视觉素材支撑视频制作？",
     "",
+    "## 素材线索",
+    `需要找的素材：${title} 的官方演示视频、发布会片段、产品或功能屏幕录制、真实使用场景视频。`,
+    `英文搜索关键词：${title} official demo、${title} hands on、${title} case study。`,
+    "",
     "## 是否建议进入素材搜索阶段",
     "暂不建议。请先完成文字研究和事实核查。",
     reason ? `\n> 自动研究暂时使用兜底报告：${reason}` : "",
@@ -237,10 +267,13 @@ async function callResearchModel(context: ResearchContext) {
     .join("\n");
 
   const prompt = [
+    "请优先按下面的“视频选题准备稿”结构输出。忽略上一版报告里论文式、综述式、过长的结构；用户是为了做视频，不是写论文。",
+    videoBriefSchemaPrompt,
+    "",
     "你是科技内容研究员。用户给你的补充材料可能来自音频转写，可能有错别字、同音字、断句错误、人名品牌名识别错误。请先清洗理解，再提取研究对象，并在报告中标出需要核查的点。",
     "不要编造来源链接。如果缺少全网资料，只能基于现有材料形成初稿，并明确需要继续核查。",
     "报告中的事实性信息必须尽量对应到来源清单中的 URL；来源清单必须保留可点击链接。",
-    reportSchemaPrompt,
+    videoBriefSchemaPrompt,
     "",
     `入口类型：${context.project.entryType}`,
     `平台：${context.project.platform ?? "未知"}`,
@@ -270,10 +303,18 @@ async function callResearchModel(context: ResearchContext) {
           name: "Research",
           content: "你是严谨的科技选题研究员，输出中文 Markdown 研究报告。",
         },
-        { role: "user", name: "user", content: prompt },
+        {
+          role: "user",
+          name: "user",
+          content: [
+            "请优先按“视频选题准备稿”输出。用户是为了做视频，不是写论文；内容要短、清楚、能帮助判断选题。",
+            videoBriefSchemaPrompt,
+            prompt,
+          ].join("\n\n"),
+        },
       ],
       temperature: 0.2,
-      max_completion_tokens: 4000,
+      max_completion_tokens: 3000,
     }),
   });
 
@@ -374,6 +415,22 @@ export function normalizeResearchReport(report: string, date = new Date()) {
   return [`报告生成时间：${shanghaiDateText(date)}`, "", cleaned].join("\n").trim();
 }
 
+function ensureMaterialCluesSection(report: string, topic?: string | null) {
+  if (/(^|\n)#{0,6}\s*(\d+[.、]\s*)?素材线索\s*[:：]?\s*(\n|$)/.test(report)) return report;
+  const fallbackTopic = topic?.trim() || "当前主题";
+  const section = [
+    "## 素材线索",
+    `需要找的素材：${fallbackTopic} 的官方演示视频、发布会片段、产品或功能屏幕录制、真实使用场景视频。`,
+    `英文搜索关键词：${fallbackTopic} official demo、${fallbackTopic} hands on、${fallbackTopic} case study。`,
+  ].join("\n");
+
+  const sourceIndex = report.search(/\n#{1,6}\s*(来源链接|来源清单)/);
+  if (sourceIndex >= 0) {
+    return `${report.slice(0, sourceIndex).trim()}\n\n${section}\n${report.slice(sourceIndex)}`;
+  }
+  return `${report.trim()}\n\n${section}`;
+}
+
 function cleanFieldLabelNoise(line: string) {
   if (!line.trim().startsWith("-")) return line;
 
@@ -390,6 +447,201 @@ function cleanFieldLabelNoise(line: string) {
 
 function extractUrls(text: string) {
   return Array.from(new Set(text.match(/https?:\/\/[^\s)\]，。；、"'<>]+/g) ?? []));
+}
+
+function normalizeMaterialUrl(url: string) {
+  return url.trim().replace(/[，。；、！？)]$/g, "");
+}
+
+function materialTypeFromUrl(url: string, title = ""): ResearchMaterialType {
+  const value = `${url} ${title}`.toLowerCase();
+  if (isVideoMaterialUrl(url)) return "VIDEO";
+  if (isDirectImageUrl(url)) return "IMAGE";
+  if (/images|image|photo|gallery|unsplash|flickr|jpg|jpeg|png|webp/.test(value)) return "IMAGE";
+  if (/github\.com|docs\.|developer\.|documentation|whitepaper|paper|arxiv|pdf/.test(value)) return "OFFICIAL_DOC";
+  if (/product|store|shop|kickstarter|indiegogo|app\.|apps\.apple|play\.google/.test(value)) return "PRODUCT_PAGE";
+  if (/twitter\.com|x\.com|instagram\.com|xiaohongshu\.com|weibo\.com|threads\.net/.test(value)) return "SOCIAL_POST";
+  if (/dataset|data|kaggle/.test(value)) return "DATASET";
+  if (/search|results|bing\.com|google\.com/.test(value)) return "SEARCH_QUERY";
+  return "ARTICLE";
+}
+
+function isDirectImageUrl(url: string) {
+  return /\.(jpg|jpeg|png|webp|gif|avif)(\?|#|$)/i.test(url);
+}
+
+function isVideoMaterialUrl(url: string) {
+  return /youtube\.com\/watch\?|youtu\.be\/[A-Za-z0-9_-]+|bilibili\.com\/video\/[A-Za-z0-9_-]+|vimeo\.com\/\d+|\.mp4(\?|#|$)|\.mov(\?|#|$)|\.webm(\?|#|$)/i.test(
+    url,
+  );
+}
+
+function isMaterialMediaUrl(url: string) {
+  return isVideoMaterialUrl(url) || isDirectImageUrl(url);
+}
+
+function materialUsage(type: ResearchMaterialType) {
+  const usage: Record<ResearchMaterialType, string> = {
+    VIDEO: "可用于核查原视频、寻找画面片段、确认演示细节。",
+    IMAGE: "可用于找产品图、界面截图、发布会画面或 B-roll 参考。",
+    ARTICLE: "可用于事实核查、背景信息和口播引用依据。",
+    PRODUCT_PAGE: "可用于确认产品功能、参数、价格、发布时间和官方表述。",
+    OFFICIAL_DOC: "可用于确认技术细节、官方定义、论文或开发者说明。",
+    SOCIAL_POST: "可用于观察用户反馈、争议点和传播语境。",
+    DATASET: "可用于补充数据支撑或趋势判断。",
+    SEARCH_QUERY: "搜索入口，用于继续人工筛选可用图片、视频和权威来源。",
+    OTHER: "待人工判断用途。",
+  };
+  return usage[type];
+}
+
+function materialCopyrightRisk(type: ResearchMaterialType) {
+  if (type === "OFFICIAL_DOC" || type === "ARTICLE" || type === "PRODUCT_PAGE") {
+    return "可作为信息来源引用；页面图片、视频或大段文字仍需单独核查授权。";
+  }
+  if (type === "SEARCH_QUERY") {
+    return "搜索结果仅作为线索；实际使用前必须逐条核查版权、授权和平台规则。";
+  }
+  return "高风险素材候选；不要直接搬运，使用前需确认版权、授权、署名和平台规则。";
+}
+
+async function videoMaterialMetadata(url: string, fallbackTitle: string) {
+  try {
+    const video = await extractVideo(url);
+    let chineseTitle = video.originalTitle;
+    try {
+      const ai = await analyzeVideoWithMinimax({
+        title: video.originalTitle,
+        description: video.description,
+        sourceName: video.sourceName,
+        platform: video.platform,
+        publishedAt: video.publishedAt,
+        likeCount: video.likeCount,
+      });
+      chineseTitle = ai.chineseTitle;
+    } catch {
+      // Keep original title when title translation is unavailable.
+    }
+
+    return {
+      title: video.originalTitle,
+      chineseTitle,
+      thumbnailUrl: video.thumbnailUrl,
+      publishedAt: video.publishedAt,
+    };
+  } catch {
+    return {
+      title: fallbackTitle,
+      chineseTitle: fallbackTitle,
+      thumbnailUrl: undefined,
+      publishedAt: undefined,
+    };
+  }
+}
+
+function sourceListFromJson(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const source = item as { title?: unknown; url?: unknown; type?: unknown };
+      if (typeof source.url !== "string") return null;
+      return {
+        title: typeof source.title === "string" ? source.title : source.url,
+        url: source.url,
+        type: typeof source.type === "string" ? source.type : "source",
+      };
+    })
+    .filter(Boolean) as Array<{ title: string; url: string; type: string }>;
+}
+
+function isSearchResultPage(url: string) {
+  return /youtube\.com\/results|google\.com\/search|bing\.com\/images\/search|bing\.com\/search/i.test(url);
+}
+
+function firstReportHeading(reportMarkdown?: string) {
+  const lines = reportMarkdown?.split(/\r?\n/) ?? [];
+  for (const line of lines) {
+    const text = line
+      .replace(/^#{1,6}\s*/, "")
+      .replace(/^视频选题准备稿\s*$/, "")
+      .trim();
+    if (!text || /^报告生成时间/.test(text) || text.length < 6) continue;
+    return text.slice(0, 80);
+  }
+  return undefined;
+}
+
+function reportSectionText(reportMarkdown: string | undefined, sectionNames: string[]) {
+  if (!reportMarkdown) return undefined;
+  const lines = reportMarkdown.split(/\r?\n/);
+  const start = lines.findIndex((line) => sectionNames.some((name) => line.includes(name)));
+  if (start < 0) return undefined;
+  const content: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^#{2,6}\s+/.test(line) && content.length > 0) break;
+    const text = line.replace(/^[-*]\s*/, "").trim();
+    if (text) content.push(text);
+    if (content.join(" ").length > 500) break;
+  }
+  return content.join(" ").slice(0, 500) || undefined;
+}
+
+function isInstructionLikeTheme(value?: string | null) {
+  if (!value) return false;
+  return /^(加入|增加|补充|调整|改成|按照|按|只找|不要|搜索|重新|继续|扩展|收窄)/.test(value.trim());
+}
+
+function cleanSearchText(value?: string | null) {
+  return value?.replace(/\s+/g, " ").replace(/[：:，。；;、]/g, " ").trim();
+}
+
+function materialClueQueries(materialClues: string | undefined, topic: string) {
+  if (!materialClues) return [];
+  const normalized = materialClues.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+  const quoted = Array.from(normalized.matchAll(/"([^"]{4,80})"/g)).map((match) => match[1]);
+  const phrases = normalized
+    .replace(/需要找的素材[:：]?/g, "")
+    .split(/[，。；;、\n]/)
+    .map((item) => cleanSearchText(item))
+    .filter((item): item is string => Boolean(item && item.length >= 4))
+    .filter((item) => !/^(英文搜索关键词用|关键词用|搜索关键词|可能是|需要找的素材)$/.test(item));
+
+  const focused = [...quoted, ...phrases]
+    .map((item) => item.replace(/^Apple官方YouTube频道的?/, "Apple official YouTube "))
+    .map((item) => item.replace(/官方介绍视频/g, "official demo"))
+    .map((item) => item.replace(/演示视频|演示片段/g, "demo video"))
+    .map((item) => item.replace(/使用场景视频/g, "use case video"))
+    .map((item) => item.replace(/屏幕录制演示/g, "screen recording demo"))
+    .map((item) => cleanSearchText(item))
+    .filter((item): item is string => Boolean(item));
+
+  return Array.from(new Set(focused.map((item) => (/[A-Za-z]/.test(item) ? item : `${topic} ${item}`)))).slice(0, 5);
+}
+
+function youtubeMaterialQueries(project: ResearchProject, instruction?: string, reportMarkdown?: string, theme?: string | null) {
+  const heading = firstReportHeading(reportMarkdown);
+  const base =
+    heading ??
+    project.title ??
+    (!isInstructionLikeTheme(theme) ? theme : undefined) ??
+    project.researchTarget ??
+    project.oneLineConclusion ??
+    project.summary ??
+    "科技产品";
+  const topic = cleanSearchText(base)?.slice(0, 80) || "科技产品";
+  const materialClues = reportSectionText(reportMarkdown, ["素材线索"]);
+
+  const queries = materialClueQueries(materialClues, topic);
+  const extra = instruction?.replace(/\s+/g, " ").trim();
+  if (extra) {
+    queries.unshift(`${topic} ${extra}`);
+    queries.push(extra);
+  }
+  if (queries.length === 0) {
+    queries.push(`${topic} official demo`, `${topic} hands on`);
+  }
+  return Array.from(new Set(queries)).slice(0, 5);
 }
 
 function buildSourceList(project: ResearchProject, supplements: Array<{ type: ResearchSupplementType; content: string }>) {
@@ -425,12 +677,33 @@ async function saveCurrentReportVersion(input: {
   userInstruction?: string;
   theme?: string;
 }) {
-  const versionNumber = await nextReportVersionNumber(input.projectId);
+  const latest = await prisma.researchReportVersion.findFirst({
+    where: { projectId: input.projectId },
+    orderBy: { versionNumber: "desc" },
+  });
+  const isRapidSameInstruction =
+    input.userInstruction &&
+    latest?.userInstruction === input.userInstruction &&
+    Date.now() - latest.createdAt.getTime() < 2 * 60 * 1000;
 
   await prisma.researchReportVersion.updateMany({
     where: { projectId: input.projectId, isCurrent: true },
     data: { isCurrent: false },
   });
+
+  if (isRapidSameInstruction && latest) {
+    return prisma.researchReportVersion.update({
+      where: { id: latest.id },
+      data: {
+        theme: input.theme ?? latest.theme,
+        reportMarkdown: input.reportMarkdown,
+        sourceList: input.sourceList,
+        isCurrent: true,
+      },
+    });
+  }
+
+  const versionNumber = await nextReportVersionNumber(input.projectId);
 
   return prisma.researchReportVersion.create({
     data: {
@@ -465,6 +738,10 @@ function fallbackIterationReport(project: ResearchProject, currentReport: string
     "- 新主题涉及哪些产品、技术、公司或案例",
     "- 是否有官网、发布稿、演示视频、论文或权威报道",
     "- 哪些内容适合做成合集，哪些只适合作为辅助素材",
+    "",
+    "## 素材线索",
+    `需要找的素材：${project.title ?? project.researchTarget ?? "当前主题"} 的官方演示视频、发布会片段、产品或功能屏幕录制、真实使用场景视频。`,
+    `英文搜索关键词：${project.title ?? project.researchTarget ?? "current topic"} official demo、${project.title ?? project.researchTarget ?? "current topic"} hands on、${project.title ?? project.researchTarget ?? "current topic"} case study。`,
     "",
     "## 6. 来源链接",
     `- 原始链接：${project.originalUrl}`,
@@ -506,10 +783,12 @@ async function callIterationModel(input: {
     "4. 和上一版相比改变了什么",
     "5. 详细综述",
     "6. 适合做视频的角度",
-    "7. 可作为素材线索的内容",
+    "7. 素材线索",
     "8. 还需要继续核查的问题",
     "9. 是否建议确认主题并进入素材搜索",
     "10. 来源链接",
+    "",
+    "注意：第 7 节标题必须严格写成“素材线索”。这一节至少写 3 条具体可搜索的素材需求或英文关键词，用于下一阶段自动搜索视频/图片素材。",
     "",
     `原始链接：${input.project.originalUrl}`,
     `当前标题：${input.project.title ?? ""}`,
@@ -539,10 +818,18 @@ async function callIterationModel(input: {
           name: "ResearchIteration",
           content: "你是严谨的科技选题研究员，负责把已有报告按用户新方向迭代成新版报告。",
         },
-        { role: "user", name: "user", content: prompt },
+        {
+          role: "user",
+          name: "user",
+          content: [
+            "请优先按“视频选题准备稿”输出。用户是为了做视频，不是写论文；新版报告要更短、更清楚、更便于判断选题。",
+            videoBriefSchemaPrompt,
+            prompt,
+          ].join("\n\n"),
+        },
       ],
       temperature: 0.2,
-      max_completion_tokens: 5000,
+      max_completion_tokens: 3000,
     }),
   });
 
@@ -561,7 +848,7 @@ async function callIterationModel(input: {
 }
 
 function safeProjectName(project: ResearchProject) {
-  let host = "ResearchProject";
+  let host = "research";
   try {
     host = new URL(project.originalUrl).hostname;
   } catch {
@@ -571,29 +858,27 @@ function safeProjectName(project: ResearchProject) {
   const raw = project.title ?? project.researchTarget ?? host;
   const cleaned = raw
     .normalize("NFKD")
-    .replace(/[^\w\s-]/g, "")
+    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
     .trim()
     .replace(/\s+/g, "_")
-    .slice(0, 36);
-  return cleaned || "ResearchProject";
+    .slice(0, 24);
+  return cleaned || "research";
 }
 
 async function ensureProjectFolders(project: ResearchProject) {
-  const folder = path.join(MATERIAL_ROOT, `${project.id.slice(0, 8)}_${safeProjectName(project)}`);
-  const folders = [
-    folder,
-    path.join(folder, "videos"),
-    path.join(folder, "audio"),
-    path.join(folder, "images"),
-    path.join(folder, "transcripts"),
-    path.join(folder, "translations"),
-    path.join(folder, "docs"),
-    path.join(folder, "links"),
-  ];
-
-  for (const item of folders) {
-    await mkdir(item, { recursive: true });
+  if (project.projectFolderPath) {
+    await mkdir(project.projectFolderPath, { recursive: true });
+    return project.projectFolderPath;
   }
+
+  const previousProjectCount = await prisma.researchProject.count({
+    where: { createdAt: { lte: project.createdAt } },
+  });
+  const folder = path.join(
+    MATERIAL_ROOT,
+    `${String(previousProjectCount).padStart(3, "0")}_${safeProjectName(project)}`,
+  );
+  await mkdir(folder, { recursive: true });
 
   return folder;
 }
@@ -673,8 +958,8 @@ async function extractAudioAndKeyframe(projectId: string, projectFolder: string,
   if (!videoFile) return;
 
   const saved: SavedFile[] = [];
-  const audioPath = path.join(projectFolder, "audio", "001_extracted_audio.m4a");
-  const keyframePath = path.join(projectFolder, "images", "001_keyframe.jpg");
+  const audioPath = path.join(projectFolder, "002_extracted_audio.m4a");
+  const keyframePath = path.join(projectFolder, "003_keyframe.jpg");
 
   try {
     await execFileAsync("ffmpeg", ["-y", "-i", videoFile, "-vn", "-acodec", "copy", audioPath], {
@@ -720,7 +1005,7 @@ async function tryPublicMediaAnalysis(project: ResearchProject) {
   if (existingAssets > 0) return;
 
   const projectFolder = await ensureProjectFolders(project);
-  const outputTemplate = path.join(projectFolder, "videos", "source.%(ext)s");
+  const outputTemplate = path.join(projectFolder, "001_source.%(ext)s");
 
   try {
     await downloadResearchMedia(project.originalUrl, outputTemplate);
@@ -762,6 +1047,164 @@ async function tryPublicMediaAnalysis(project: ResearchProject) {
       },
     });
   }
+}
+
+function safeFileSegment(value: string) {
+  return value
+    .normalize("NFKD")
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "_")
+    .slice(0, 48) || "material";
+}
+
+async function saveMaterialLinkFile(input: {
+  projectId: string;
+  folder: string;
+  title: string;
+  sourceUrl: string;
+  notes?: string | null;
+}) {
+  const filePath = path.join(input.folder, `${safeFileSegment(input.title)}_${input.projectId.slice(0, 6)}.txt`);
+  const content = [
+    `标题：${input.title}`,
+    `链接：${input.sourceUrl}`,
+    input.notes ? `备注：${input.notes}` : undefined,
+    "",
+    "说明：该条素材不是可直接下载的视频直链，系统先保存为链接归档。实际用于视频前仍需人工打开来源并核查版权、授权和可用性。",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  await writeFile(filePath, content, "utf8");
+  await saveAssets(input.projectId, [{ type: "OTHER", localPath: filePath, title: input.title }], input.sourceUrl);
+  return filePath;
+}
+
+async function downloadImageMaterial(input: {
+  projectId: string;
+  folder: string;
+  title: string;
+  sourceUrl: string;
+}) {
+  const response = await fetch(input.sourceUrl);
+  if (!response.ok) throw new Error(`图片下载失败：${response.status}`);
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.startsWith("image/")) throw new Error("链接不是可直接下载的图片文件");
+
+  const extFromType = contentType.split("/").at(1)?.split(";").at(0) ?? "jpg";
+  const filePath = path.join(input.folder, `${safeFileSegment(input.title)}.${extFromType}`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  await writeFile(filePath, bytes);
+  await saveAssets(input.projectId, [{ type: "IMAGE", localPath: filePath, title: input.title }], input.sourceUrl);
+  return filePath;
+}
+
+export async function downloadResearchMaterial(materialId: string) {
+  const material = await prisma.researchMaterial.findUniqueOrThrow({
+    where: { id: materialId },
+    include: { project: true },
+  });
+
+  if (material.status === "REJECTED") {
+    throw new Error("这条素材已标记为不用，不能下载。");
+  }
+  if (material.status === "DOWNLOADING") {
+    return material;
+  }
+
+  await prisma.researchMaterial.update({
+    where: { id: materialId },
+    data: { status: "DOWNLOADING", notes: material.notes },
+  });
+
+  const projectFolder = await ensureProjectFolders(material.project);
+
+  try {
+    if (material.type === "VIDEO") {
+      const outputName = `${safeFileSegment(material.chineseTitle ?? material.title)}.%(ext)s`;
+      await downloadResearchMedia(material.sourceUrl, path.join(projectFolder, outputName));
+      const files = await listFiles(projectFolder);
+      await saveAssets(
+        material.projectId,
+        files.map((file) => ({
+          type: assetTypeFromFile(file),
+          localPath: file,
+          title: path.basename(file),
+        })),
+        material.sourceUrl,
+      );
+    } else if (material.type === "IMAGE") {
+      await downloadImageMaterial({
+        projectId: material.projectId,
+        folder: projectFolder,
+        title: material.title,
+        sourceUrl: material.sourceUrl,
+      });
+    } else {
+      await saveMaterialLinkFile({
+        projectId: material.projectId,
+        folder: projectFolder,
+        title: material.title,
+        sourceUrl: material.sourceUrl,
+        notes: material.notes,
+      });
+    }
+
+    await prisma.researchProject.update({
+      where: { id: material.projectId },
+      data: {
+        projectFolderPath: projectFolder,
+        materialStatus: "PARTIAL",
+        recommendation: "已下载或归档部分素材，请从自动解析素材入口查看本地文件详情。",
+      },
+    });
+
+    return prisma.researchMaterial.update({
+      where: { id: materialId },
+      data: {
+        status: "DOWNLOADED",
+        notes: material.notes ? `${material.notes}\n已下载/归档到：${projectFolder}` : `已下载/归档到：${projectFolder}`,
+      },
+    });
+  } catch (error) {
+    return prisma.researchMaterial.update({
+      where: { id: materialId },
+      data: {
+        status: "FAILED",
+        notes:
+          error instanceof Error
+            ? `${material.notes ?? ""}\n下载失败：${error.message.slice(0, 500)}`.trim()
+            : `${material.notes ?? ""}\n下载失败：未知错误`.trim(),
+      },
+    });
+  }
+}
+
+export async function downloadResearchMaterials(projectId: string) {
+  const materials = await prisma.researchMaterial.findMany({
+    where: {
+      projectId,
+      status: { notIn: ["REJECTED", "DOWNLOADED", "DOWNLOADING"] },
+      type: { in: ["VIDEO", "IMAGE"] },
+    },
+    orderBy: [{ status: "asc" }, { createdAt: "asc" }],
+  });
+
+  let downloaded = 0;
+  let failed = 0;
+
+  for (const material of materials) {
+    const result = await downloadResearchMaterial(material.id);
+    if (result.status === "DOWNLOADED") downloaded += 1;
+    if (result.status === "FAILED") failed += 1;
+  }
+
+  return {
+    total: materials.length,
+    downloaded,
+    failed,
+  };
 }
 
 export async function runResearchProject(projectId: string) {
@@ -832,6 +1275,7 @@ export async function runResearchProject(projectId: string) {
     report = fallbackReport(context, error instanceof Error ? error.message : "未知错误");
   }
   report = normalizeResearchReport(report);
+  report = ensureMaterialCluesSection(report, title ?? project.researchTarget ?? project.oneLineConclusion);
   const finalSourceList = buildSourceList({ ...project, platform, title, summary }, supplements);
 
   const updatedProject = await prisma.researchProject.update({
@@ -894,6 +1338,7 @@ export async function iterateResearchProject(projectId: string, userInstruction:
   }
 
   report = normalizeResearchReport(report);
+  report = ensureMaterialCluesSection(report, project.title ?? project.researchTarget ?? project.oneLineConclusion);
   const finalSourceList = buildSourceList(project, supplements);
 
   const updatedProject = await prisma.researchProject.update({
@@ -951,4 +1396,240 @@ export async function confirmResearchReportVersion(versionId: string) {
       errorMessage: null,
     },
   });
+}
+
+export async function searchResearchMaterials(
+  projectId: string,
+  options: { instruction?: string; mode?: "append" | "replace" } = {},
+) {
+  const project = await prisma.researchProject.findUniqueOrThrow({
+    where: { id: projectId },
+    include: {
+      reportVersions: {
+        where: { isFinal: true },
+        orderBy: { versionNumber: "desc" },
+        take: 1,
+      },
+    },
+  });
+  const mode = options.mode ?? "append";
+  const instruction = options.instruction?.trim();
+  const finalReportVersion = project.reportVersions[0];
+  if (!finalReportVersion) {
+    throw new Error("请先在报告版本里设置最终主题，再搜索素材。");
+  }
+  const activeReportMarkdown = finalReportVersion.reportMarkdown;
+  const activeSourceList = finalReportVersion.sourceList ?? project.sourceList;
+  const activeTheme = finalReportVersion.theme ?? project.researchTarget;
+
+  await prisma.researchMaterial.deleteMany({
+    where: {
+      projectId,
+      OR: [
+        { type: "SEARCH_QUERY" },
+        { sourceUrl: { contains: "youtube.com/results" } },
+        { sourceUrl: { contains: "google.com/search" } },
+        { sourceUrl: { contains: "bing.com/images/search" } },
+        { sourceUrl: { contains: "bing.com/search" } },
+      ],
+    },
+  });
+
+  if (mode === "replace") {
+    await prisma.researchMaterial.deleteMany({
+      where: {
+        projectId,
+        status: { notIn: ["REJECTED", "DOWNLOADED", "DOWNLOADING"] },
+        type: { in: ["VIDEO", "IMAGE"] },
+      },
+    });
+  }
+
+  const candidates = new Map<
+    string,
+    {
+      title: string;
+      chineseTitle?: string;
+      sourceUrl: string;
+      type: ResearchMaterialType;
+      thumbnailUrl?: string;
+      publishedAt?: Date;
+      notes?: string;
+    }
+  >();
+
+  async function addCandidate(input: {
+    title: string;
+    chineseTitle?: string;
+    sourceUrl: string;
+    type?: ResearchMaterialType;
+    thumbnailUrl?: string;
+    publishedAt?: Date;
+    notes?: string;
+  }) {
+    const sourceUrl = normalizeMaterialUrl(input.sourceUrl);
+    if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl)) return;
+    if (isSearchResultPage(sourceUrl)) return;
+    const type = input.type ?? materialTypeFromUrl(sourceUrl, input.title);
+    if (type !== "VIDEO" && type !== "IMAGE") return;
+
+    let title = input.title.trim().slice(0, 180) || sourceUrl;
+    let chineseTitle = input.chineseTitle?.trim().slice(0, 180);
+    let thumbnailUrl = input.thumbnailUrl;
+    let publishedAt = input.publishedAt;
+
+    if (type === "VIDEO" && (!chineseTitle || !thumbnailUrl || !publishedAt)) {
+      const metadata = await videoMaterialMetadata(sourceUrl, title);
+      title = metadata.title.slice(0, 180);
+      chineseTitle = metadata.chineseTitle.slice(0, 180);
+      thumbnailUrl = metadata.thumbnailUrl;
+      publishedAt = metadata.publishedAt;
+    }
+
+    if (type === "IMAGE" && !thumbnailUrl && isDirectImageUrl(sourceUrl)) {
+      thumbnailUrl = sourceUrl;
+    }
+
+    candidates.set(sourceUrl, {
+      title,
+      chineseTitle,
+      sourceUrl,
+      type,
+      thumbnailUrl,
+      publishedAt,
+      notes: input.notes,
+    });
+  }
+
+  if (isMaterialMediaUrl(project.originalUrl)) {
+    await addCandidate({
+      title: project.title ? `原始来源：${project.title}` : "原始来源",
+      sourceUrl: project.originalUrl,
+      notes: "研究项目的原始素材链接。",
+    });
+  }
+
+  for (const source of sourceListFromJson(activeSourceList)) {
+    if (isMaterialMediaUrl(source.url)) {
+      await addCandidate({
+        title: source.title,
+        sourceUrl: source.url,
+        notes: `研究来源中识别出的素材链接：${source.type}`,
+      });
+    }
+  }
+
+  for (const url of extractUrls(activeReportMarkdown)) {
+    if (isMaterialMediaUrl(url)) {
+      await addCandidate({
+        title: `报告中提到的素材链接：${url}`,
+        sourceUrl: url,
+        notes: "从当前研究报告正文中识别出的素材链接。",
+      });
+    }
+  }
+
+  let youtubeSearchError: string | undefined;
+  for (const query of youtubeMaterialQueries(project, instruction, activeReportMarkdown, activeTheme)) {
+    try {
+      const videos = await searchYouTubeVideos(query, 5);
+      for (const video of videos) {
+        let chineseTitle = video.originalTitle;
+        try {
+          const ai = await analyzeVideoWithMinimax({
+            title: video.originalTitle,
+            description: video.description,
+            sourceName: video.sourceName,
+            platform: video.platform,
+            publishedAt: video.publishedAt,
+            likeCount: video.likeCount,
+          });
+          chineseTitle = ai.chineseTitle;
+        } catch {
+          // Keep original title when translation is unavailable.
+        }
+
+        await addCandidate({
+          title: video.originalTitle,
+          chineseTitle,
+          sourceUrl: video.originalUrl,
+          type: "VIDEO",
+          thumbnailUrl: video.thumbnailUrl,
+          publishedAt: video.publishedAt,
+          notes: instruction
+            ? `YouTube 自动搜索结果：${query}。用户搜索指令：${instruction}。来源频道：${video.sourceName}`
+            : `YouTube 自动搜索结果：${query}。来源频道：${video.sourceName}`,
+        });
+      }
+    } catch (error) {
+      youtubeSearchError = error instanceof Error ? error.message : "YouTube 搜索失败";
+    }
+  }
+
+  if (mode === "replace") {
+    await prisma.researchMaterial.deleteMany({
+      where: {
+        projectId,
+        status: { notIn: ["REJECTED", "DOWNLOADED", "DOWNLOADING"] },
+        type: { in: ["VIDEO", "IMAGE"] },
+        sourceUrl: { notIn: Array.from(candidates.keys()) },
+      },
+    });
+  }
+
+  let createdCount = 0;
+  for (const candidate of candidates.values()) {
+    const result = await prisma.researchMaterial.upsert({
+      where: {
+        projectId_sourceUrl: {
+          projectId,
+          sourceUrl: candidate.sourceUrl,
+        },
+      },
+      create: {
+        projectId,
+        type: candidate.type,
+        title: candidate.title,
+        chineseTitle: candidate.chineseTitle,
+        sourceUrl: candidate.sourceUrl,
+        thumbnailUrl: candidate.thumbnailUrl,
+        publishedAt: candidate.publishedAt,
+        usage: materialUsage(candidate.type),
+        copyrightRisk: materialCopyrightRisk(candidate.type),
+        notes: candidate.notes,
+      },
+      update: {
+        type: candidate.type,
+        title: candidate.title,
+        chineseTitle: candidate.chineseTitle,
+        thumbnailUrl: candidate.thumbnailUrl,
+        publishedAt: candidate.publishedAt,
+        usage: materialUsage(candidate.type),
+        copyrightRisk: materialCopyrightRisk(candidate.type),
+        notes: candidate.notes,
+      },
+    });
+    if (result.createdAt.getTime() === result.updatedAt.getTime()) createdCount += 1;
+  }
+
+  await prisma.researchProject.update({
+    where: { id: projectId },
+    data: {
+      materialStatus: candidates.size > 0 ? "PARTIAL" : "FAILED",
+      recommendation:
+        candidates.size > 0
+          ? youtubeSearchError
+            ? `已生成第一版素材候选池，但 YouTube 自动搜索部分失败：${youtubeSearchError.slice(0, 200)}。请逐条核查版权、用途和可用性。`
+            : "已生成第一版素材候选池，请逐条核查版权、用途和可用性。"
+          : "暂未生成素材候选，请补充更多来源链接或报告内容后重试。",
+    },
+  });
+
+  return {
+    total: candidates.size,
+    created: createdCount,
+    mode,
+    reportVersion: finalReportVersion.versionNumber,
+    youtubeSearchError,
+  };
 }

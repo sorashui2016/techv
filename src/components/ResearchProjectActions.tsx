@@ -39,16 +39,6 @@ export function ResearchProjectActions({ projectId }: { projectId: string }) {
     router.refresh();
   }
 
-  async function materialPlaceholder() {
-    await fetch(`/api/research/projects/${projectId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ materialStatus: "READY_TO_SEARCH" }),
-    });
-    setMessage("素材搜索已标记为准备状态，自动素材搜索将在后续版本实现。");
-    router.refresh();
-  }
-
   return (
     <div className="flex flex-wrap items-center gap-2">
       <button
@@ -69,13 +59,6 @@ export function ResearchProjectActions({ projectId }: { projectId: string }) {
           {action.label}
         </button>
       ))}
-      <button
-        type="button"
-        onClick={materialPlaceholder}
-        className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800 hover:bg-amber-100"
-      >
-        搜索素材
-      </button>
       {message ? <span className="text-sm text-zinc-600">{message}</span> : null}
     </div>
   );
