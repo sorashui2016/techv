@@ -175,6 +175,7 @@ enum ExploreRuleStatus {
 enum ExploreCandidateStatus {
   UNMARKED
   CANDIDATE
+  DONE
   PENDING
   MATERIAL
   REJECTED

@@ -20,7 +20,7 @@ const assetTypeLabels: Record<ResearchAssetType, string> = {
 const assetStatusLabels: Record<ResearchAssetStatus, string> = {
   SAVED: "已保存",
   FAILED: "失败",
-  NEEDS_MANUAL_UPLOAD: "需要手动补充",
+  NEEDS_MANUAL_UPLOAD: "需手动补充",
 };
 
 function dateText(date: Date) {
@@ -39,6 +39,10 @@ function durationText(seconds?: number) {
   const minutes = Math.floor(seconds / 60);
   const rest = Math.round(seconds % 60);
   return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
+function countByType(assets: Array<{ type: ResearchAssetType }>, type: ResearchAssetType) {
+  return assets.filter((asset) => asset.type === type).length;
 }
 
 export default async function ResearchAssetsPage({ params }: { params: Promise<{ id: string }> }) {
@@ -74,14 +78,20 @@ export default async function ResearchAssetsPage({ params }: { params: Promise<{
             <section className="rounded-lg border border-zinc-200 bg-white p-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h1 className="text-2xl font-semibold">自动解析素材详情</h1>
+                  <h1 className="text-2xl font-bold">已下载素材</h1>
                   <p className="mt-2 text-sm leading-6 text-zinc-600">
                     {project.title ?? project.oneLineConclusion ?? "未命名研究项目"}
                   </p>
                 </div>
                 <span className="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-600">
-                  {project.assets.length} 条
+                  共 {project.assets.length} 条
                 </span>
+              </div>
+              <div className="mt-4 grid gap-2 text-sm sm:grid-cols-4">
+                <div className="rounded-md bg-zinc-50 px-3 py-2">视频：{countByType(project.assets, "VIDEO")}</div>
+                <div className="rounded-md bg-zinc-50 px-3 py-2">图片：{countByType(project.assets, "IMAGE")}</div>
+                <div className="rounded-md bg-zinc-50 px-3 py-2">音频：{countByType(project.assets, "AUDIO")}</div>
+                <div className="rounded-md bg-zinc-50 px-3 py-2">字幕：{countByType(project.assets, "SUBTITLE")}</div>
               </div>
               {project.projectFolderPath ? (
                 <p className="mt-4 break-all rounded-md bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
@@ -99,7 +109,7 @@ export default async function ResearchAssetsPage({ params }: { params: Promise<{
                         <th className="px-3 py-2">类型</th>
                         <th className="px-3 py-2">状态</th>
                         <th className="px-3 py-2">视频信息</th>
-                        <th className="px-3 py-2">文件/说明</th>
+                        <th className="px-3 py-2">文件</th>
                         <th className="px-3 py-2">来源</th>
                         <th className="px-3 py-2">时间</th>
                       </tr>
@@ -114,14 +124,10 @@ export default async function ResearchAssetsPage({ params }: { params: Promise<{
                               (() => {
                                 const mediaInfo = videoInfoByAssetId.get(asset.id);
                                 if (!mediaInfo) return <span className="text-zinc-400">未读取</span>;
-                                if (mediaInfo.error) {
-                                  return <span className="text-rose-700">{mediaInfo.error}</span>;
-                                }
+                                if (mediaInfo.error) return <span className="text-rose-700">{mediaInfo.error}</span>;
                                 return (
                                   <div className="space-y-1">
-                                    <div className="font-medium text-zinc-900">
-                                      {mediaInfo.resolution ?? "分辨率未知"}
-                                    </div>
+                                    <div className="font-medium text-zinc-900">{mediaInfo.resolution ?? "分辨率未知"}</div>
                                     <div className="text-xs text-zinc-500">
                                       {[mediaInfo.codec, durationText(mediaInfo.durationSeconds)].filter(Boolean).join(" / ") ||
                                         "无更多信息"}
@@ -137,7 +143,6 @@ export default async function ResearchAssetsPage({ params }: { params: Promise<{
                             <div className="break-all text-zinc-800">
                               {asset.localPath ?? asset.title ?? "未保存本地文件"}
                             </div>
-                            {asset.notes ? <div className="mt-1 text-xs text-zinc-500">{asset.notes}</div> : null}
                           </td>
                           <td className="px-3 py-3">
                             {asset.sourceUrl ? (
@@ -160,7 +165,7 @@ export default async function ResearchAssetsPage({ params }: { params: Promise<{
                   </table>
                 </div>
               ) : (
-                <p className="text-sm text-zinc-600">还没有自动解析素材记录。</p>
+                <p className="text-sm text-zinc-600">还没有已下载素材。</p>
               )}
             </section>
           </>

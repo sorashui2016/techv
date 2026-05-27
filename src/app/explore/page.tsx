@@ -1,15 +1,20 @@
 import Image from "next/image";
 import Link from "next/link";
-import type { ExploreCandidate, ExploreCandidateStatus, Prisma } from "@prisma/client";
+import type { DecisionStatus, ExploreCandidate, ExploreCandidateStatus, Prisma } from "@prisma/client";
 import { ExploreCandidateActions } from "@/components/ExploreCandidateActions";
 import { ExploreRunButton } from "@/components/ExploreRunButton";
+import { MaterialPoolDownloadButton } from "@/components/MaterialPoolDownloadButton";
 import { Nav } from "@/components/Nav";
+import { VideoActions } from "@/components/VideoActions";
+import { exploreCandidateQualityWhere } from "@/lib/explore-config";
 import { ensureDefaultExploreRules } from "@/lib/explore";
+import { decisionLabels, platformLabels } from "@/lib/labels";
 import { prisma } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 type CandidateRow = Prisma.ExploreCandidateGetPayload<object>;
+type RadarVideoRow = Prisma.VideoItemGetPayload<{ include: { source: true } }>;
 type SearchParams = Promise<{
   status?: string;
 }>;
@@ -18,11 +23,18 @@ const exploreStatusLabels: Record<ExploreCandidateStatus | "ALL", string> = {
   ALL: "全部状态",
   UNMARKED: "未标记",
   CANDIDATE: "备选",
+  DONE: "已做",
   PENDING: "待定",
   MATERIAL: "素材",
   REJECTED: "不做",
   RESEARCH: "研究",
 };
+
+const sharedPoolStatuses = new Set(["CANDIDATE", "DONE", "PENDING", "MATERIAL", "REJECTED"]);
+
+function isSharedPoolStatus(status: string): status is DecisionStatus & ExploreCandidateStatus {
+  return sharedPoolStatuses.has(status);
+}
 
 function dateText(date?: Date | null) {
   if (!date) return "未知";
@@ -40,26 +52,41 @@ function jsonArray(value: ExploreCandidate["tags"]) {
   return Array.isArray(value) ? value.map(String) : [];
 }
 
+function aggregationSources(value: ExploreCandidate["matchedRules"]) {
+  if (!Array.isArray(value)) return [];
+  const aggregation = value.find((item) => {
+    return (
+      typeof item === "object" &&
+      item !== null &&
+      "kind" in item &&
+      (item as { kind?: unknown }).kind === "topicAggregation"
+    );
+  }) as { sources?: Array<{ url?: string; title?: string; sourceName?: string }> } | undefined;
+
+  return Array.isArray(aggregation?.sources) ? aggregation.sources.filter((source) => source.url) : [];
+}
+
 function recentContentWhere(status: string) {
-  const cutoff = new Date(Date.now() - 730 * 24 * 60 * 60 * 1000);
   return {
+    ...exploreCandidateQualityWhere(),
     status:
       status === "ALL"
         ? undefined
         : status === "UNMARKED" ||
             status === "CANDIDATE" ||
+            status === "DONE" ||
             status === "PENDING" ||
             status === "MATERIAL" ||
             status === "REJECTED" ||
             status === "RESEARCH"
           ? (status as ExploreCandidateStatus)
           : "UNMARKED",
-    OR: [{ publishedAt: null }, { publishedAt: { gte: cutoff } }],
   };
 }
 
 function CandidateCard({ candidate }: { candidate: CandidateRow }) {
   const tags = jsonArray(candidate.tags);
+  const sources = aggregationSources(candidate.matchedRules);
 
   return (
     <article className="rounded-lg border border-zinc-200 bg-white p-4">
@@ -122,7 +149,69 @@ function CandidateCard({ candidate }: { candidate: CandidateRow }) {
               {candidate.recommendationReason}
             </p>
           ) : null}
+          {sources.length > 1 ? (
+            <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-600">
+              <p className="font-medium text-zinc-800">Aggregated from {sources.length} signals</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {sources.slice(0, 4).map((source) => (
+                  <a
+                    key={source.url}
+                    href={source.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded bg-zinc-100 px-2 py-1 hover:bg-teal-50 hover:text-teal-700"
+                  >
+                    {source.sourceName ?? source.title ?? "source"}
+                  </a>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <ExploreCandidateActions candidateId={candidate.id} currentStatus={candidate.status} />
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function RadarVideoCard({ video }: { video: RadarVideoRow }) {
+  return (
+    <article className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+      <div className="flex flex-wrap gap-2 text-xs">
+        <span className="rounded bg-cyan-50 px-2 py-1 font-medium text-cyan-800">
+          雷达 · {platformLabels[video.platform]}
+        </span>
+        <span className="rounded bg-lime-50 px-2 py-1 font-medium text-lime-800">{video.score} 分</span>
+        <span className="rounded bg-zinc-200 px-2 py-1 font-medium text-zinc-700">
+          {decisionLabels[video.decisionStatus]}
+        </span>
+      </div>
+      <div className="mt-4 grid gap-4 sm:grid-cols-[180px_1fr]">
+        <a
+          href={video.originalUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="relative aspect-video overflow-hidden rounded-md bg-zinc-200"
+        >
+          {video.thumbnailUrl ? <Image src={video.thumbnailUrl} alt="" fill className="object-cover" unoptimized /> : null}
+        </a>
+        <div className="flex flex-col gap-3">
+          <a
+            href={video.originalUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-base font-semibold leading-6 text-zinc-950 hover:text-teal-700"
+          >
+            {video.chineseTitle ?? video.originalTitle}
+          </a>
+          <p className="text-sm leading-6 text-zinc-700">{video.chineseSummary}</p>
+          <div className="grid gap-1 text-xs text-zinc-500 sm:grid-cols-2">
+            <span>来源：{video.sourceName}</span>
+            <span>发布时间：{dateText(video.publishedAt)}</span>
+            <span>点赞：{video.likeCount ?? "未知"}</span>
+            <span>监测：{dateText(video.detectedAt)}</span>
+          </div>
+          <VideoActions videoId={video.id} currentStatus={video.decisionStatus} />
         </div>
       </div>
     </article>
@@ -132,8 +221,9 @@ function CandidateCard({ candidate }: { candidate: CandidateRow }) {
 export default async function ExplorePage({ searchParams }: { searchParams: SearchParams }) {
   const params = await searchParams;
   const selectedStatus = params.status ?? "UNMARKED";
+  const showUnifiedPool = isSharedPoolStatus(selectedStatus);
   await ensureDefaultExploreRules();
-  const [todayPicks, recentCandidates, lastRun] = await Promise.all([
+  const [todayPicks, recentCandidates, radarVideos, lastRun] = await Promise.all([
     prisma.exploreCandidate.findMany({
       where: { isTodayPick: true, ...recentContentWhere(selectedStatus) },
       orderBy: [{ score: "desc" }, { discoveredAt: "desc" }],
@@ -144,6 +234,17 @@ export default async function ExplorePage({ searchParams }: { searchParams: Sear
       orderBy: [{ discoveredAt: "desc" }],
       take: 20,
     }),
+    showUnifiedPool
+      ? prisma.videoItem.findMany({
+          include: { source: true },
+          where: {
+            researchProjects: { none: {} },
+            decisionStatus: selectedStatus as DecisionStatus,
+          },
+          orderBy: [{ updatedAt: "desc" }],
+          take: 40,
+        })
+      : Promise.resolve([]),
     prisma.exploreRun.findFirst({ orderBy: { startedAt: "desc" } }),
   ]);
 
@@ -186,6 +287,13 @@ export default async function ExplorePage({ searchParams }: { searchParams: Sear
           <button className="rounded-md bg-zinc-950 px-3 py-2 text-sm font-medium text-white">查看池子</button>
         </form>
 
+        {selectedStatus === "MATERIAL" ? (
+          <MaterialPoolDownloadButton
+            endpoint="/api/materials/download"
+            disabled={todayPicks.length + recentCandidates.length + radarVideos.length === 0}
+          />
+        ) : null}
+
         <section className="flex flex-col gap-4">
           <h2 className="text-lg font-semibold">今日科技发现 10 条</h2>
           {todayPicks.length === 0 ? (
@@ -202,8 +310,11 @@ export default async function ExplorePage({ searchParams }: { searchParams: Sear
         </section>
 
         <section className="flex flex-col gap-4">
-          <h2 className="text-lg font-semibold">最近探索候选内容</h2>
+          <h2 className="text-lg font-semibold">{showUnifiedPool ? "统一状态池" : "最近探索候选内容"}</h2>
           <div className="grid gap-4 lg:grid-cols-2">
+            {radarVideos.map((video) => (
+              <RadarVideoCard key={video.id} video={video} />
+            ))}
             {recentCandidates.map((candidate) => (
               <CandidateCard key={candidate.id} candidate={candidate} />
             ))}

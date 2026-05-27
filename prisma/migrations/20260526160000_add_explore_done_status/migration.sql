@@ -1,0 +1,1 @@
+ALTER TYPE "ExploreCandidateStatus" ADD VALUE IF NOT EXISTS 'DONE';

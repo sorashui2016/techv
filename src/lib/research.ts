@@ -16,7 +16,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { prisma } from "./db";
 import { analyzeVideoWithMinimax } from "./minimax";
-import { downloadResearchMedia, extractVideo, searchYouTubeVideos } from "./yt-dlp";
+import { downloadResearchMedia, downloadResearchSubtitles, extractVideo, searchYouTubeVideos } from "./yt-dlp";
 
 const execFileAsync = promisify(execFile);
 const MATERIAL_ROOT = "project_materials";
@@ -46,6 +46,11 @@ type ResearchContext = {
   video?: VideoItem | null;
   candidate?: ExploreCandidate | null;
   supplements: Array<{ type: ResearchSupplementType; content: string }>;
+  videoUnderstanding?: string;
+  searchQueries?: string[];
+  webSources?: ResearchWebSource[];
+  researchObjects?: ResearchObject[];
+  factChecks?: ResearchFactCheck[];
 };
 
 type SavedFile = {
@@ -54,11 +59,37 @@ type SavedFile = {
   title: string;
 };
 
+type ResearchWebSource = {
+  title: string;
+  url: string;
+  type: string;
+  snippet?: string;
+  text?: string;
+  query?: string;
+  domain?: string;
+  evidenceTerms?: string[];
+};
+
+type ResearchObject = {
+  name: string;
+  kind: string;
+  searchHints: string[];
+};
+
+type ResearchFactCheck = {
+  claim: string;
+  supportLevel: "strong" | "medium" | "weak";
+  sources: Array<{ title: string; url: string; type: string }>;
+  note?: string;
+};
+
 const reportSchemaPrompt = `
 请生成一篇中文科技选题研究综述，使用 Markdown。
 禁止使用 Markdown 表格。不要输出带竖线的表格。并列信息请用“字段：内容、内容、内容”的形式，或使用普通项目符号列表。
 不要使用 Markdown 加粗、斜体、复选框或任务列表。不要输出 **加粗**、__加粗__、[ ]、[x] 这类符号。
 不要自行编写“报告生成时间”。报告生成时间由系统自动添加。
+报告目标：这不是论文式研究报告，而是给视频创作者看的产品/技术理解稿。读完后，创作者应该知道这个东西是什么、为什么值得讲、怎么讲、需要找哪些画面素材。
+重要规则：不要把“待核查问题”作为报告章节。能通过搜索确认的信息，应该先整理成结论再写入报告；如果搜索后仍无法确认，只在对应段落中简短写“来源不足”，不要编造事实或来源链接。
 报告必须包含：
 1. 一句话说明这个内容是什么
 2. 详细介绍
@@ -72,13 +103,12 @@ const reportSchemaPrompt = `
 10. 争议点、风险和不确定性
 11. 对普通人的意义
 12. 适合做视频的角度
-13. 需要继续核查的问题
-14. 是否建议进入素材搜索阶段
-15. 来源清单：必须列出信息来源标题和 URL。没有 URL 的来源不要编造链接，只能写“待补充来源链接”。
+13. 是否建议进入素材搜索阶段
+14. 来源清单：必须列出信息来源标题和 URL。没有 URL 的来源不要编造链接，只能写“来源不足”。
 `;
 
 const videoBriefSchemaPrompt = reportSchemaPrompt && `
-请生成一份“视频选题准备稿”，不是论文式研究报告。目标是帮创作者快速看懂这个产品、技术或新闻，判断能不能做视频，以及下一步还要补查什么。
+请生成一份“视频选题准备稿”，不是论文式研究报告。目标是帮创作者快速看懂这个产品、技术或新闻，判断能不能做视频，以及接下来该找什么画面素材。
 
 写作要求：
 - 中文输出，默认 1200-1800 字以内；信息确实复杂时最多不超过 2500 字。
@@ -86,7 +116,8 @@ const videoBriefSchemaPrompt = reportSchemaPrompt && `
 - 不要使用 Markdown 表格、加粗星号、斜体、复选框或任务列表。
 - 不要自己编写“报告生成时间”，系统会自动添加。
 - 只写和做视频决策有关的信息。
-- 不确定的内容要明确写“待核查”，不要编造事实或来源链接。
+- 不要设置“待核查问题”章节；系统应该根据视频内容和已知线索先搜索、整理和交叉确认。
+- 不确定的内容不要编造成事实；如果搜索后仍无法确认，只在对应段落里简短标注“来源不足”。
 - 必须包含一个标题严格为“素材线索”的独立段落，不能改名为“可作为素材线索的内容”或其他名称。
 
 报告结构必须按下面顺序：
@@ -97,8 +128,7 @@ const videoBriefSchemaPrompt = reportSchemaPrompt && `
 5. 相关周边：为了讲清它，还需要了解哪些公司、人物、同类产品、旧技术、行业背景或延伸案例。
 6. 可拍视频角度：给 3-5 个具体选题方向，每个方向一句话说明。
 7. 素材线索：必须写具体可搜索的素材需求和搜索关键词。至少 3 条，优先包含官方 YouTube/发布会/WWDC/演示视频/屏幕录制/真实案例/产品图等；如果能想到英文关键词，必须直接写出，例如 “Apple Personal Voice ALS story”。
-8. 待核查问题：只列真正会影响视频判断的问题。
-9. 来源链接：必须列出信息来源标题和 URL；没有 URL 的来源不要编造链接，只能写“待补充来源链接”。
+8. 来源链接：必须列出信息来源标题和 URL；没有 URL 的来源不要编造链接，只能写“来源不足”。
 `;
 
 export function detectResearchPlatform(url: string): Platform {
@@ -189,6 +219,18 @@ export async function createResearchProjectFromExploreCandidate(candidateId: str
   return project;
 }
 
+async function createResearchProjectForExploreMaterial(candidateId: string) {
+  const candidate = await prisma.exploreCandidate.findUniqueOrThrow({ where: { id: candidateId } });
+  return createResearchProject({
+    entryType: "EXPLORE_CARD",
+    originalUrl: candidate.originalUrl,
+    platform: candidate.platform,
+    exploreCandidateId: candidate.id,
+    title: candidate.chineseTitle ?? candidate.originalTitle,
+    summary: candidate.chineseSummary,
+  });
+}
+
 export async function addResearchSupplement(
   projectId: string,
   type: ResearchSupplementType,
@@ -221,6 +263,15 @@ function fallbackReport(context: ResearchContext, reason?: string) {
   const supplementText = context.supplements
     .map((item) => `- ${item.type}: ${item.content.slice(0, 500)}`)
     .join("\n");
+  const searchQueries = context.searchQueries?.map((query) => `- ${query}`).join("\n");
+  const webSources = context.webSources
+    ?.slice(0, 8)
+    .map((source) => `- ${source.title}: ${source.url}`)
+    .join("\n");
+  const factChecks = context.factChecks
+    ?.slice(0, 8)
+    .map((item) => `- ${item.claim}（支撑：${item.supportLevel}，来源数：${item.sources.length}）`)
+    .join("\n");
 
   return [
     `# ${title}`,
@@ -236,17 +287,21 @@ function fallbackReport(context: ResearchContext, reason?: string) {
     "## 初步判断",
     "当前版本已创建研究项目。小红书、视频号或解析不足的链接需要补充标题、正文、字幕、转写文本或截图说明后继续研究。",
     "",
-    "## 需要继续核查的问题",
-    "- 产品、技术或新闻事件的准确名称是什么？",
-    "- 是否存在官网、新闻稿、论文、权威媒体报道或品牌资料？",
-    "- 这个内容是否有足够视觉素材支撑视频制作？",
+    "## 已尝试搜索线索",
+    searchQueries || "- 暂无可用搜索线索。",
+    "",
+    "## 已找到来源",
+    webSources || "- 暂无可用外部来源。",
+    "",
+    "## 已交叉验证的信息",
+    factChecks || "- 暂无足够来源形成交叉验证。",
     "",
     "## 素材线索",
     `需要找的素材：${title} 的官方演示视频、发布会片段、产品或功能屏幕录制、真实使用场景视频。`,
     `英文搜索关键词：${title} official demo、${title} hands on、${title} case study。`,
     "",
     "## 是否建议进入素材搜索阶段",
-    "暂不建议。请先完成文字研究和事实核查。",
+    "暂不建议。当前自动研究没有获得足够资料，需要补充可分析的视频信息或来源文本后再继续。",
     reason ? `\n> 自动研究暂时使用兜底报告：${reason}` : "",
   ].join("\n");
 }
@@ -265,15 +320,25 @@ async function callResearchModel(context: ResearchContext) {
   const sourceList = buildSourceList(context.project, context.supplements)
     .map((source) => `- ${source.title}: ${source.url}`)
     .join("\n");
+  const searchQueries = context.searchQueries?.map((query) => `- ${query}`).join("\n") || "暂无";
+  const researchObjects = researchObjectsForPrompt(context.researchObjects ?? []);
+  const webSources = researchSourcesForPrompt(context.webSources ?? []);
+  const factChecks = factChecksForPrompt(context.factChecks ?? []);
 
   const prompt = [
     "请优先按下面的“视频选题准备稿”结构输出。忽略上一版报告里论文式、综述式、过长的结构；用户是为了做视频，不是写论文。",
     videoBriefSchemaPrompt,
     "",
-    "你是科技内容研究员。用户给你的补充材料可能来自音频转写，可能有错别字、同音字、断句错误、人名品牌名识别错误。请先清洗理解，再提取研究对象，并在报告中标出需要核查的点。",
-    "不要编造来源链接。如果缺少全网资料，只能基于现有材料形成初稿，并明确需要继续核查。",
+    "你是科技内容研究员。用户给你的补充材料可能来自音频转写，可能有错别字、同音字、断句错误、人名品牌名识别错误。请先清洗理解，再提取研究对象，并把已经能确认的信息整理成适合视频创作者理解的报告。",
+    "你收到的“自动搜索来源”是系统围绕视频内容搜索到的网页、官网、产品页、媒体报道、论文或开源项目。请优先基于这些来源综合整理，而不是只复述原视频标题。",
+    "你还会收到“系统交叉验证结果”。strong/medium 级别的信息可以写成结论；weak 级别只可谨慎引用，必须标注来源不足或表述为线索。",
+    "如果多个来源互相支持同一事实，可以直接写成结论；如果来源之间冲突，请在相关段落简短说明差异。",
+    "不要编造来源链接。如果缺少资料，只能基于现有材料形成保守结论，并在对应段落简短标注来源不足；不要输出“待核查问题”章节。",
     "报告中的事实性信息必须尽量对应到来源清单中的 URL；来源清单必须保留可点击链接。",
     videoBriefSchemaPrompt,
+    "",
+    "视频信息提取与内容理解：",
+    context.videoUnderstanding ?? buildVideoUnderstanding(context),
     "",
     `入口类型：${context.project.entryType}`,
     `平台：${context.project.platform ?? "未知"}`,
@@ -287,6 +352,18 @@ async function callResearchModel(context: ResearchContext) {
     "",
     "当前已知来源链接：",
     sourceList || "暂无",
+    "",
+    "系统提炼出的搜索词：",
+    searchQueries,
+    "",
+    "研究对象/搜索线索结构化结果：",
+    researchObjects,
+    "",
+    "自动搜索来源整理：",
+    webSources,
+    "",
+    "系统交叉验证结果：",
+    factChecks,
   ].join("\n");
 
   const response = await fetch(url, {
@@ -410,8 +487,36 @@ export function sanitizeResearchReport(report: string) {
     .trim();
 }
 
+function stripUnwantedReportSections(report: string) {
+  const blockedHeadings = ["待核查问题", "还需要继续核查的问题", "需要继续核查的问题"];
+  const lines = report.split(/\r?\n/);
+  const output: string[] = [];
+  let skipping = false;
+
+  for (const line of lines) {
+    const heading = line
+      .trim()
+      .replace(/^#{1,6}\s*/, "")
+      .replace(/^\d+[.、]\s*/, "")
+      .replace(/[：:]\s*$/, "")
+      .trim();
+    const isHeading = /^#{1,6}\s+\S+/.test(line.trim()) || /^\d+[.、]\s*\S{2,30}[：:]?$/.test(line.trim());
+
+    if (isHeading && blockedHeadings.includes(heading)) {
+      skipping = true;
+      continue;
+    }
+    if (skipping && isHeading) {
+      skipping = false;
+    }
+    if (!skipping) output.push(line);
+  }
+
+  return output.join("\n").replace(/\n{4,}/g, "\n\n\n").trim();
+}
+
 export function normalizeResearchReport(report: string, date = new Date()) {
-  const cleaned = sanitizeResearchReport(report);
+  const cleaned = stripUnwantedReportSections(sanitizeResearchReport(report));
   return [`报告生成时间：${shanghaiDateText(date)}`, "", cleaned].join("\n").trim();
 }
 
@@ -449,8 +554,472 @@ function extractUrls(text: string) {
   return Array.from(new Set(text.match(/https?:\/\/[^\s)\]，。；、"'<>]+/g) ?? []));
 }
 
+function decodeHtmlEntities(value: string) {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&#x27;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+}
+
+function cleanWebText(value: string) {
+  return decodeHtmlEntities(value)
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sourceDomain(url: string) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeResearchUrl(url: string) {
+  try {
+    const parsed = new URL(decodeHtmlEntities(url));
+    if (parsed.hostname.includes("duckduckgo.com") && parsed.searchParams.get("uddg")) {
+      return parsed.searchParams.get("uddg") ?? url;
+    }
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return decodeHtmlEntities(url);
+  }
+}
+
+function researchSourceType(url: string) {
+  const domain = sourceDomain(url) ?? "";
+  if (/youtube\.com|youtu\.be|vimeo\.com/.test(domain)) return "video";
+  if (/github\.com/.test(domain)) return "open_source";
+  if (/kickstarter\.com|indiegogo\.com|producthunt\.com/.test(domain)) return "product";
+  if (/arxiv\.org|nature\.com|science\.org|ieee\.org|acm\.org|mit\.edu|stanford\.edu|cmu\.edu/.test(domain)) return "research";
+  if (/reuters\.com|bbc\.com|theverge\.com|wired\.com|techcrunch\.com|cnet\.com/.test(domain)) return "media";
+  if (/\.edu|\.org|\.gov/.test(domain)) return "authority";
+  return "web";
+}
+
+async function fetchTextWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 12_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "TechVResearchBot/1.0",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        ...(init.headers ?? {}),
+      },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function sourceTitleFromUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    const slug = parsed.pathname.split("/").filter(Boolean).at(-1) ?? parsed.hostname;
+    return decodeURIComponent(slug).replace(/[-_]+/g, " ").slice(0, 120) || parsed.hostname;
+  } catch {
+    return url.slice(0, 120);
+  }
+}
+
+function extractPageTitle(html: string, fallbackUrl: string) {
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  if (title) return cleanWebText(title).slice(0, 180);
+  return sourceTitleFromUrl(fallbackUrl);
+}
+
+function extractPageDescription(html: string) {
+  const meta =
+    html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["'][^>]*>/i)?.[1] ??
+    html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["'][^>]*>/i)?.[1];
+  if (meta) return cleanWebText(meta).slice(0, 800);
+  return cleanWebText(html).slice(0, 1000);
+}
+
+function extractReadablePageText(html: string) {
+  const main =
+    html.match(/<article[^>]*>([\s\S]*?)<\/article>/i)?.[1] ??
+    html.match(/<main[^>]*>([\s\S]*?)<\/main>/i)?.[1] ??
+    html;
+
+  return cleanWebText(main)
+    .replace(/\b(menu|subscribe|newsletter|advertisement|privacy policy|cookie policy)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 5000);
+}
+
+function tokenizeEvidenceText(text: string) {
+  return Array.from(
+    new Set(
+      text
+        .replace(/https?:\/\/\S+/g, " ")
+        .match(/[A-Za-z][A-Za-z0-9+-]{2,}|[\u4e00-\u9fa5]{2,8}/g) ?? [],
+    ),
+  )
+    .map((item) => item.toLowerCase())
+    .filter((item) => !["this", "that", "with", "from", "have", "more", "about", "使用", "可以", "这个", "一个", "视频"].includes(item))
+    .slice(0, 80);
+}
+
+function isUsefulResearchUrl(url: string) {
+  const domain = sourceDomain(url);
+  if (!domain) return false;
+  if (/google\.|bing\.com|duckduckgo\.com|youtube\.com\/results/.test(url)) return false;
+  if (/\.(jpg|jpeg|png|webp|gif|zip|mp4|mov)(\?|#|$)/i.test(url)) return false;
+  return /^https?:\/\//i.test(url);
+}
+
+function addUniqueSource(sources: ResearchWebSource[], source: ResearchWebSource) {
+  const url = normalizeResearchUrl(source.url);
+  if (!isUsefulResearchUrl(url)) return;
+  if (sources.some((item) => normalizeResearchUrl(item.url) === url)) return;
+  sources.push({
+    ...source,
+    url,
+    domain: source.domain ?? sourceDomain(url),
+    type: source.type || researchSourceType(url),
+  });
+}
+
 function normalizeMaterialUrl(url: string) {
   return url.trim().replace(/[，。；、！？)]$/g, "");
+}
+
+function buildVideoUnderstanding(context: ResearchContext) {
+  const parts = [
+    `标题：${context.project.title ?? context.video?.originalTitle ?? context.candidate?.originalTitle ?? "未知"}`,
+    `摘要：${context.project.summary ?? context.video?.chineseSummary ?? context.candidate?.chineseSummary ?? "暂无"}`,
+    `描述：${context.video?.description ?? context.candidate?.description ?? "暂无"}`,
+    `来源：${context.video?.sourceName ?? context.candidate?.sourceName ?? context.project.entryType}`,
+    `原始链接：${context.project.originalUrl}`,
+    ...context.supplements.map((item) => `补充材料 ${item.type}：${item.content.slice(0, 1600)}`),
+  ];
+
+  return parts.join("\n").replace(/\n{3,}/g, "\n\n").slice(0, 9000);
+}
+
+function cleanSearchQuery(value?: string | null) {
+  return value
+    ?.replace(/https?:\/\/\S+/g, " ")
+    .replace(/[【】「」《》“”"'()（）[\]{}]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
+function extractEntityPhrases(text: string) {
+  const phrases = new Set<string>();
+  const normalized = text.replace(/\s+/g, " ");
+
+  for (const match of normalized.matchAll(/[“「《]([^”」》]{2,60})[”」》]/g)) {
+    phrases.add(match[1]);
+  }
+  for (const match of normalized.matchAll(/\b[A-Z][A-Za-z0-9+-]{1,}(?:\s+[A-Z][A-Za-z0-9+-]{1,}){0,4}\b/g)) {
+    phrases.add(match[0]);
+  }
+  for (const match of normalized.matchAll(/(?:AI|robot|robotics|prosthetic|bionic|wearable|MRI|CNC|printer|drone|exoskeleton|BCI|neural|hardware|Kickstarter|Indiegogo)[^，。；\n]{0,50}/gi)) {
+    phrases.add(match[0]);
+  }
+
+  return Array.from(phrases)
+    .map(cleanSearchQuery)
+    .filter((item): item is string => Boolean(item && item.length >= 3))
+    .slice(0, 10);
+}
+
+function classifyResearchObject(name: string) {
+  const value = name.toLowerCase();
+  if (/university|institute|lab|clinic|hospital|mit|stanford|cmu|mayo|johns hopkins|harvard|大学|实验室|医院|研究所/.test(value)) {
+    return "机构/团队";
+  }
+  if (/robot|prosthetic|wearable|device|gadget|printer|cnc|drone|mri|camera|hardware|机器人|设备|产品|打印机|假肢|眼镜/.test(value)) {
+    return "产品/装置";
+  }
+  if (/ai|bci|neural|material|battery|sensor|algorithm|interface|智能|脑机|材料|算法|传感器|接口/.test(value)) {
+    return "技术";
+  }
+  if (/kickstarter|indiegogo|launched|announced|发布|众筹|预售|融资/.test(value)) return "事件/发布";
+  return "实体/关键词";
+}
+
+function buildResearchObjects(context: ResearchContext) {
+  const title = cleanSearchQuery(
+    context.project.title ?? context.video?.originalTitle ?? context.candidate?.originalTitle,
+  );
+  const phrases = new Set<string>();
+  if (title) phrases.add(title);
+  for (const phrase of extractEntityPhrases(buildVideoUnderstanding(context))) phrases.add(phrase);
+
+  return Array.from(phrases)
+    .map(cleanSearchQuery)
+    .filter((name): name is string => Boolean(name && name.length >= 3))
+    .slice(0, 12)
+    .map((name) => ({
+      name,
+      kind: classifyResearchObject(name),
+      searchHints: Array.from(
+        new Set([name, `${name} official`, `${name} demo`, `${name} how it works`, `${name} research`].map(cleanSearchQuery)),
+      ).filter((item): item is string => Boolean(item)),
+    }));
+}
+
+function buildResearchSearchQueries(context: ResearchContext) {
+  const baseTitle = cleanSearchQuery(
+    context.project.title ?? context.video?.originalTitle ?? context.candidate?.originalTitle,
+  );
+  const text = buildVideoUnderstanding(context);
+  const entities = extractEntityPhrases(text);
+  const objects = context.researchObjects ?? buildResearchObjects(context);
+  const queries = new Set<string>();
+
+  if (baseTitle) {
+    queries.add(baseTitle);
+    queries.add(`${baseTitle} official`);
+    queries.add(`${baseTitle} technology`);
+    queries.add(`${baseTitle} demo`);
+  }
+
+  for (const entity of entities) {
+    queries.add(entity);
+    queries.add(`${entity} official`);
+  }
+  for (const object of objects.slice(0, 5)) {
+    for (const hint of object.searchHints.slice(0, 3)) queries.add(hint);
+  }
+
+  return Array.from(queries)
+    .map(cleanSearchQuery)
+    .filter((item): item is string => Boolean(item && item.length >= 4))
+    .slice(0, 8);
+}
+
+async function searchDuckDuckGo(query: string, limit: number) {
+  const url = new URL("https://duckduckgo.com/html/");
+  url.searchParams.set("q", query);
+  const html = await fetchTextWithTimeout(url.toString());
+  const results: ResearchWebSource[] = [];
+  const matches = Array.from(html.matchAll(/<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi));
+  const snippets = Array.from(html.matchAll(/<a[^>]+class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/a>|<div[^>]+class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi));
+
+  for (const [index, match] of matches.slice(0, limit).entries()) {
+    const resultUrl = normalizeResearchUrl(match[1]);
+    addUniqueSource(results, {
+      title: cleanWebText(match[2]) || sourceTitleFromUrl(resultUrl),
+      url: resultUrl,
+      type: researchSourceType(resultUrl),
+      snippet: snippets[index] ? cleanWebText(snippets[index][1] ?? snippets[index][2] ?? "") : undefined,
+      query,
+    });
+  }
+
+  return results;
+}
+
+async function searchBing(query: string, limit: number) {
+  const url = new URL("https://www.bing.com/search");
+  url.searchParams.set("q", query);
+  const html = await fetchTextWithTimeout(url.toString());
+  const results: ResearchWebSource[] = [];
+  const blocks = Array.from(html.matchAll(/<li class="b_algo"[\s\S]*?<\/li>/gi));
+
+  for (const block of blocks.slice(0, limit)) {
+    const href = block[0].match(/<h2[^>]*>\s*<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i);
+    if (!href) continue;
+    const resultUrl = normalizeResearchUrl(href[1]);
+    const snippet = block[0].match(/<p[^>]*>([\s\S]*?)<\/p>/i)?.[1];
+    addUniqueSource(results, {
+      title: cleanWebText(href[2]) || sourceTitleFromUrl(resultUrl),
+      url: resultUrl,
+      type: researchSourceType(resultUrl),
+      snippet: snippet ? cleanWebText(snippet) : undefined,
+      query,
+    });
+  }
+
+  return results;
+}
+
+async function webSearch(query: string, limit = 4) {
+  try {
+    const results = await searchDuckDuckGo(query, limit);
+    if (results.length > 0) return results;
+  } catch {
+    // Try the fallback search provider below.
+  }
+
+  try {
+    return await searchBing(query, limit);
+  } catch {
+    return [];
+  }
+}
+
+async function enrichResearchSource(source: ResearchWebSource) {
+  const domain = source.domain ?? sourceDomain(source.url);
+  if (/youtube\.com|youtu\.be|vimeo\.com|reddit\.com|news\.ycombinator\.com/.test(domain ?? "")) {
+    const baseText = `${source.title} ${source.snippet ?? ""}`;
+    return { ...source, evidenceTerms: tokenizeEvidenceText(baseText) };
+  }
+
+  try {
+    const html = await fetchTextWithTimeout(source.url, {}, 8_000);
+    const text = extractReadablePageText(html);
+    return {
+      ...source,
+      title: source.title || extractPageTitle(html, source.url),
+      snippet: source.snippet || extractPageDescription(html),
+      text,
+      evidenceTerms: tokenizeEvidenceText(`${source.title} ${source.snippet ?? ""} ${text}`),
+    };
+  } catch {
+    const baseText = `${source.title} ${source.snippet ?? ""}`;
+    return { ...source, evidenceTerms: tokenizeEvidenceText(baseText) };
+  }
+}
+
+function rankResearchSource(source: ResearchWebSource) {
+  const domain = source.domain ?? "";
+  let score = 0;
+  if (/\.edu|\.gov|mit\.edu|stanford\.edu|cmu\.edu|mayo|johnshopkins|harvard|nature\.com|science\.org|ieee\.org|acm\.org|arxiv\.org/.test(domain)) score += 35;
+  if (/github\.com|kickstarter\.com|indiegogo\.com|producthunt\.com|official|docs\./.test(domain)) score += 25;
+  if (/reuters\.com|bbc\.com|wired\.com|theverge\.com|techcrunch\.com/.test(domain)) score += 18;
+  if (/youtube\.com|youtu\.be|vimeo\.com/.test(domain)) score += 10;
+  if (source.snippet && source.snippet.length > 80) score += 8;
+  return score;
+}
+
+function buildClaimCandidates(context: ResearchContext, objects: ResearchObject[]) {
+  const claims = new Set<string>();
+  const title = cleanSearchQuery(context.project.title ?? context.video?.originalTitle ?? context.candidate?.originalTitle);
+  if (title) claims.add(title);
+  for (const object of objects.slice(0, 8)) claims.add(object.name);
+
+  const summary = cleanSearchQuery(context.project.summary ?? context.video?.chineseSummary ?? context.candidate?.chineseSummary);
+  if (summary) {
+    for (const sentence of summary.split(/[。.!?！？]/).map(cleanSearchQuery)) {
+      if (sentence && sentence.length >= 8) claims.add(sentence);
+    }
+  }
+
+  for (const supplement of context.supplements.slice(0, 4)) {
+    for (const sentence of supplement.content.split(/[。.!?！？\n]/).map(cleanSearchQuery)) {
+      if (sentence && sentence.length >= 8 && sentence.length <= 120) claims.add(sentence);
+      if (claims.size >= 18) break;
+    }
+  }
+
+  return Array.from(claims).slice(0, 18);
+}
+
+function sourceSupportsClaim(source: ResearchWebSource, claim: string) {
+  const claimTerms = tokenizeEvidenceText(claim).filter((term) => term.length >= 3);
+  if (claimTerms.length === 0) return false;
+  const sourceTerms = new Set(source.evidenceTerms ?? tokenizeEvidenceText(`${source.title} ${source.snippet ?? ""} ${source.text ?? ""}`));
+  const hits = claimTerms.filter((term) => sourceTerms.has(term));
+  const minHits = claimTerms.length >= 6 ? 2 : 1;
+  return hits.length >= minHits;
+}
+
+function buildFactChecks(context: ResearchContext, sources: ResearchWebSource[], objects: ResearchObject[]) {
+  return buildClaimCandidates(context, objects)
+    .map((claim) => {
+      const matched = sources
+        .filter((source) => sourceSupportsClaim(source, claim))
+        .slice(0, 5)
+        .map((source) => ({
+          title: source.title,
+          url: source.url,
+          type: source.type,
+        }));
+      const supportLevel: ResearchFactCheck["supportLevel"] =
+        matched.length >= 3 ? "strong" : matched.length >= 2 ? "medium" : "weak";
+      return {
+        claim,
+        supportLevel,
+        sources: matched,
+        note:
+          matched.length === 0
+            ? "自动搜索来源没有直接命中该信息，只能作为视频原始信息线索。"
+            : undefined,
+      };
+    })
+    .filter((item) => item.sources.length > 0 || item.claim.length <= 80)
+    .slice(0, 12);
+}
+
+async function collectResearchSources(context: ResearchContext, queries: string[]) {
+  const sources: ResearchWebSource[] = [];
+
+  for (const source of buildSourceList(context.project, context.supplements)) {
+    addUniqueSource(sources, {
+      title: source.title,
+      url: source.url,
+      type: source.type,
+      query: "known-source",
+    });
+  }
+
+  for (const query of queries.slice(0, 6)) {
+    const results = await webSearch(query, 4);
+    for (const result of results) addUniqueSource(sources, result);
+    if (sources.length >= 18) break;
+  }
+
+  const enriched = [];
+  for (const source of sources.slice(0, 14)) {
+    enriched.push(await enrichResearchSource(source));
+  }
+
+  return enriched
+    .sort((a, b) => rankResearchSource(b) - rankResearchSource(a))
+    .slice(0, 12);
+}
+
+function researchSourcesForPrompt(sources: ResearchWebSource[]) {
+  if (sources.length === 0) return "暂无自动搜索来源。";
+  return sources
+    .map((source, index) => {
+      const snippet = source.snippet ? `\n摘要：${source.snippet.slice(0, 700)}` : "";
+      const evidence = source.text ? `\n正文证据摘录：${source.text.slice(0, 900)}` : "";
+      return `${index + 1}. ${source.title}\nURL：${source.url}\n类型：${source.type}${source.query ? `\n搜索词：${source.query}` : ""}${snippet}${evidence}`;
+    })
+    .join("\n\n");
+}
+
+function researchObjectsForPrompt(objects: ResearchObject[]) {
+  if (objects.length === 0) return "暂无结构化研究对象。";
+  return objects
+    .map((object, index) => {
+      const hints = object.searchHints.slice(0, 4).join(" / ");
+      return `${index + 1}. ${object.name}\n类型：${object.kind}\n搜索线索：${hints}`;
+    })
+    .join("\n\n");
+}
+
+function factChecksForPrompt(items: ResearchFactCheck[]) {
+  if (items.length === 0) return "暂无足够来源形成交叉验证。";
+  return items
+    .map((item, index) => {
+      const sources = item.sources
+        .map((source) => `${source.title} (${source.type}) ${source.url}`)
+        .join("\n  - ");
+      return `${index + 1}. ${item.claim}\n支撑强度：${item.supportLevel}${item.note ? `\n备注：${item.note}` : ""}\n来源：\n  - ${sources || "来源不足"}`;
+    })
+    .join("\n\n");
 }
 
 function materialTypeFromUrl(url: string, title = ""): ResearchMaterialType {
@@ -662,6 +1231,31 @@ function buildSourceList(project: ResearchProject, supplements: Array<{ type: Re
   return sources;
 }
 
+function mergeResearchSources(
+  baseSources: Array<{ title: string; url: string; type: string }>,
+  webSources: ResearchWebSource[],
+) {
+  const merged: ResearchWebSource[] = baseSources.map((source) => ({ ...source }));
+  for (const source of webSources) {
+    addUniqueSource(merged, {
+      title: source.title,
+      url: source.url,
+      type: source.type,
+      snippet: source.snippet,
+      query: source.query,
+      domain: source.domain,
+    });
+  }
+  return merged.map((source) => ({
+    title: source.title,
+    url: source.url,
+    type: source.type,
+    snippet: source.snippet,
+    query: source.query,
+    domain: source.domain,
+  }));
+}
+
 async function nextReportVersionNumber(projectId: string) {
   const latest = await prisma.researchReportVersion.findFirst({
     where: { projectId },
@@ -734,11 +1328,6 @@ function fallbackIterationReport(project: ResearchProject, currentReport: string
     "## 4. 上一版报告摘要",
     currentReport.slice(0, 3000),
     "",
-    "## 5. 还需要继续查什么",
-    "- 新主题涉及哪些产品、技术、公司或案例",
-    "- 是否有官网、发布稿、演示视频、论文或权威报道",
-    "- 哪些内容适合做成合集，哪些只适合作为辅助素材",
-    "",
     "## 素材线索",
     `需要找的素材：${project.title ?? project.researchTarget ?? "当前主题"} 的官方演示视频、发布会片段、产品或功能屏幕录制、真实使用场景视频。`,
     `英文搜索关键词：${project.title ?? project.researchTarget ?? "current topic"} official demo、${project.title ?? project.researchTarget ?? "current topic"} hands on、${project.title ?? project.researchTarget ?? "current topic"} case study。`,
@@ -774,7 +1363,7 @@ async function callIterationModel(input: {
     "请基于上一版报告、用户的新方向、补充材料和来源链接，生成一版新的中文研究报告。",
     "这不是简单续写，而是一次研究主题迭代：可以收窄、扩展、改成合集、改成对比、改成产品线梳理。",
     "不要使用 Markdown 表格，不要使用加粗星号，不要输出复选框，不要自己编写报告生成时间。",
-    "不要编造来源链接。报告最后必须列出来源链接；没有 URL 的事实请标为待核查。",
+    "不要编造来源链接。报告最后必须列出来源链接；没有 URL 的事实只能简短标注来源不足，不要设置“待核查问题”章节。",
     "",
     "新版报告必须包含：",
     "1. 本轮调整目标",
@@ -784,9 +1373,8 @@ async function callIterationModel(input: {
     "5. 详细综述",
     "6. 适合做视频的角度",
     "7. 素材线索",
-    "8. 还需要继续核查的问题",
-    "9. 是否建议确认主题并进入素材搜索",
-    "10. 来源链接",
+    "8. 是否建议确认主题并进入素材搜索",
+    "9. 来源链接",
     "",
     "注意：第 7 节标题必须严格写成“素材线索”。这一节至少写 3 条具体可搜索的素材需求或英文关键词，用于下一阶段自动搜索视频/图片素材。",
     "",
@@ -950,6 +1538,44 @@ async function addSubtitleSupplements(projectId: string, files: string[]) {
     } catch {
       // Keep the asset even if text reading fails.
     }
+  }
+}
+
+function shouldTrySubtitleExtraction(platform?: Platform | null) {
+  return platform === "YOUTUBE" || platform === "WEB" || platform === "INSTAGRAM" || platform === "TIKTOK";
+}
+
+async function tryPublicSubtitleExtraction(project: ResearchProject) {
+  const existingSubtitle = await prisma.researchSupplement.count({
+    where: { projectId: project.id, type: "SUBTITLE" },
+  });
+  if (existingSubtitle > 0) return;
+
+  const projectFolder = await ensureProjectFolders(project);
+  const outputTemplate = path.join(projectFolder, "000_subtitle.%(ext)s");
+
+  try {
+    await downloadResearchSubtitles(project.originalUrl, outputTemplate);
+    const files = await listFiles(projectFolder);
+    const subtitleFiles = files.filter((file) => assetTypeFromFile(file) === "SUBTITLE");
+    if (subtitleFiles.length === 0) return;
+
+    await saveAssets(
+      project.id,
+      subtitleFiles.map((file) => ({
+        type: "SUBTITLE",
+        localPath: file,
+        title: path.basename(file),
+      })),
+      project.originalUrl,
+    );
+    await addSubtitleSupplements(project.id, subtitleFiles);
+    await prisma.researchProject.update({
+      where: { id: project.id },
+      data: { projectFolderPath: projectFolder },
+    });
+  } catch {
+    // Subtitle extraction is best-effort. Research can continue with metadata and web sources.
   }
 }
 
@@ -1207,6 +1833,140 @@ export async function downloadResearchMaterials(projectId: string) {
   };
 }
 
+type PoolDownloadResult = {
+  total: number;
+  downloaded: number;
+  skipped: number;
+  failed: number;
+};
+
+async function downloadOriginalMediaForProject(project: ResearchProject) {
+  const existingAssets = await prisma.researchAsset.count({
+    where: {
+      projectId: project.id,
+      sourceUrl: project.originalUrl,
+      status: "SAVED",
+      type: { in: ["VIDEO", "AUDIO", "IMAGE", "SUBTITLE", "KEYFRAME"] },
+    },
+  });
+
+  if (existingAssets > 0) return "skipped" as const;
+
+  const projectFolder = await ensureProjectFolders(project);
+  const outputName = `${safeFileSegment(project.title ?? project.researchTarget ?? "source")}.%(ext)s`;
+
+  await prisma.researchProject.update({
+    where: { id: project.id },
+    data: { materialStatus: "DOWNLOADING", projectFolderPath: projectFolder, errorMessage: null },
+  });
+
+  try {
+    await downloadResearchMedia(project.originalUrl, path.join(projectFolder, outputName));
+    const files = await listFiles(projectFolder);
+    await saveAssets(
+      project.id,
+      files.map((file) => ({
+        type: assetTypeFromFile(file),
+        localPath: file,
+        title: path.basename(file),
+      })),
+      project.originalUrl,
+    );
+    await prisma.researchProject.update({
+      where: { id: project.id },
+      data: {
+        materialStatus: "PARTIAL",
+        projectFolderPath: projectFolder,
+        recommendation: "素材池一键下载已保存原始视频，请到已保存素材详情页查看本地文件。",
+      },
+    });
+    return "downloaded" as const;
+  } catch (error) {
+    await prisma.researchAsset.create({
+      data: {
+        projectId: project.id,
+        type: "VIDEO",
+        status: "FAILED",
+        sourceUrl: project.originalUrl,
+        notes:
+          error instanceof Error
+            ? `素材池一键下载失败：${error.message.slice(0, 500)}`
+            : "素材池一键下载失败：未知错误",
+      },
+    });
+    await prisma.researchProject.update({
+      where: { id: project.id },
+      data: {
+        materialStatus: "FAILED",
+        projectFolderPath: projectFolder,
+        errorMessage: error instanceof Error ? error.message.slice(0, 500) : "素材池一键下载失败",
+      },
+    });
+    return "failed" as const;
+  }
+}
+
+function emptyPoolResult(): PoolDownloadResult {
+  return { total: 0, downloaded: 0, skipped: 0, failed: 0 };
+}
+
+function addPoolResult(result: PoolDownloadResult, status: "downloaded" | "skipped" | "failed") {
+  result.total += 1;
+  result[status] += 1;
+}
+
+export async function downloadRadarMaterialPool() {
+  const result = emptyPoolResult();
+  const videos = await prisma.videoItem.findMany({
+    where: { decisionStatus: "MATERIAL" },
+    orderBy: { updatedAt: "desc" },
+    take: 100,
+  });
+
+  for (const video of videos) {
+    const project = await createResearchProject({
+      entryType: "RADAR_CARD",
+      originalUrl: video.originalUrl,
+      platform: video.platform,
+      sourceVideoId: video.id,
+      title: video.chineseTitle ?? video.originalTitle,
+      summary: video.chineseSummary,
+    });
+    addPoolResult(result, await downloadOriginalMediaForProject(project));
+  }
+
+  return result;
+}
+
+export async function downloadExploreMaterialPool() {
+  const result = emptyPoolResult();
+  const candidates = await prisma.exploreCandidate.findMany({
+    where: { status: "MATERIAL" },
+    orderBy: { updatedAt: "desc" },
+    take: 100,
+  });
+
+  for (const candidate of candidates) {
+    const project = await createResearchProjectForExploreMaterial(candidate.id);
+    addPoolResult(result, await downloadOriginalMediaForProject(project));
+  }
+
+  return result;
+}
+
+export async function downloadUnifiedMaterialPool() {
+  const result = emptyPoolResult();
+  const radarResult = await downloadRadarMaterialPool();
+  const exploreResult = await downloadExploreMaterialPool();
+
+  result.total = radarResult.total + exploreResult.total;
+  result.downloaded = radarResult.downloaded + exploreResult.downloaded;
+  result.skipped = radarResult.skipped + exploreResult.skipped;
+  result.failed = radarResult.failed + exploreResult.failed;
+
+  return result;
+}
+
 export async function runResearchProject(projectId: string) {
   await prisma.researchProject.update({
     where: { id: projectId },
@@ -1234,6 +1994,10 @@ export async function runResearchProject(projectId: string) {
     }
   }
 
+  if (shouldTrySubtitleExtraction(platform)) {
+    await tryPublicSubtitleExtraction({ ...project, platform, title, summary });
+  }
+
   if (needsSupplement(platform)) {
     await tryPublicMediaAnalysis({ ...project, platform, title, summary });
   }
@@ -1256,16 +2020,48 @@ export async function runResearchProject(projectId: string) {
     });
   }
 
+  const baseProject = { ...project, platform, title, summary };
+  const baseSupplements = supplements.map((item) => ({ type: item.type, content: item.content }));
+  const baseContext: ResearchContext = {
+    project: baseProject,
+    video: project.sourceVideo,
+    candidate: project.exploreCandidate,
+    supplements: baseSupplements,
+  };
+  const videoUnderstanding = buildVideoUnderstanding(baseContext);
+  const researchObjects = buildResearchObjects({ ...baseContext, videoUnderstanding });
+  const searchQueries = buildResearchSearchQueries({ ...baseContext, videoUnderstanding, researchObjects });
+
   await prisma.researchProject.update({
     where: { id: projectId },
-    data: { platform, title, summary, status },
+    data: { platform, title, summary, status: "SEARCHING_TEXT" },
+  });
+
+  const webSources = await collectResearchSources(
+    { ...baseContext, videoUnderstanding, researchObjects, searchQueries },
+    searchQueries,
+  );
+  const factChecks = buildFactChecks(
+    { ...baseContext, videoUnderstanding, researchObjects, searchQueries, webSources },
+    webSources,
+    researchObjects,
+  );
+
+  await prisma.researchProject.update({
+    where: { id: projectId },
+    data: { status },
   });
 
   const context: ResearchContext = {
     project: { ...project, platform, title, summary },
     video: project.sourceVideo,
     candidate: project.exploreCandidate,
-    supplements: supplements.map((item) => ({ type: item.type, content: item.content })),
+    supplements: baseSupplements,
+    videoUnderstanding,
+    researchObjects,
+    searchQueries,
+    webSources,
+    factChecks,
   };
 
   let report: string;
@@ -1276,7 +2072,7 @@ export async function runResearchProject(projectId: string) {
   }
   report = normalizeResearchReport(report);
   report = ensureMaterialCluesSection(report, title ?? project.researchTarget ?? project.oneLineConclusion);
-  const finalSourceList = buildSourceList({ ...project, platform, title, summary }, supplements);
+  const finalSourceList = mergeResearchSources(buildSourceList(baseProject, supplements), webSources);
 
   const updatedProject = await prisma.researchProject.update({
     where: { id: projectId },

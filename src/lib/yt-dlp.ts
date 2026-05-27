@@ -74,6 +74,23 @@ function buildResearchDownloadArgs(url: string, outputTemplate: string) {
   ];
 }
 
+function buildSubtitleDownloadArgs(url: string, outputTemplate: string) {
+  return [
+    "--no-warnings",
+    "--no-playlist",
+    "--skip-download",
+    "--write-subs",
+    "--write-auto-subs",
+    "--sub-langs",
+    "zh.*,en.*",
+    "--sub-format",
+    "vtt/srt/best",
+    "-o",
+    outputTemplate,
+    url,
+  ];
+}
+
 function parseRows(stdout: string) {
   return stdout
     .split(/\r?\n/)
@@ -305,5 +322,13 @@ export async function downloadResearchMedia(url: string, outputTemplate: string)
   await execFileAsync(ytDlp, buildResearchDownloadArgs(url, outputTemplate), {
     maxBuffer: 1024 * 1024 * 32,
     timeout: 180_000,
+  });
+}
+
+export async function downloadResearchSubtitles(url: string, outputTemplate: string) {
+  const ytDlp = process.env.YTDLP_PATH ?? "yt-dlp";
+  await execFileAsync(ytDlp, buildSubtitleDownloadArgs(url, outputTemplate), {
+    maxBuffer: 1024 * 1024 * 16,
+    timeout: 90_000,
   });
 }

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 
 const schema = z.object({
-  status: z.enum(["UNMARKED", "CANDIDATE", "PENDING", "MATERIAL", "REJECTED", "RESEARCH"]),
+  status: z.enum(["UNMARKED", "CANDIDATE", "DONE", "PENDING", "MATERIAL", "REJECTED", "RESEARCH"]),
 });
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {

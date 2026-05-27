@@ -4,7 +4,6 @@ import type {
   ResearchMaterialStatus,
   ResearchMaterialType,
   ResearchProjectStatus,
-  ResearchSupplementType,
 } from "@prisma/client";
 import { Nav } from "@/components/Nav";
 import { ReportText } from "@/components/ReportText";
@@ -28,17 +27,17 @@ export const dynamic = "force-dynamic";
 const statusLabels: Record<ResearchProjectStatus, string> = {
   TODO: "待研究",
   PARSING: "链接解析中",
-  NEEDS_SUPPLEMENT: "需要补充材料",
-  SUPPLEMENT_SUBMITTED: "补充材料已提交",
+  NEEDS_SUPPLEMENT: "需要补充关键词",
+  SUPPLEMENT_SUBMITTED: "关键词已提交",
   UNDERSTANDING: "内容理解中",
-  SEARCHING_TEXT: "文字资料搜索中",
+  SEARCHING_TEXT: "资料搜索中",
   WRITING_REPORT: "综述生成中",
   ITERATING: "继续研究中",
-  REVIEW_PENDING: "已研究-待确认",
+  REVIEW_PENDING: "已生成报告",
   THEME_CONFIRMED: "主题已确认",
-  WORTH_DOING: "已研究-值得做",
-  PENDING: "已研究-待定",
-  NOT_DOING: "已研究-暂不做",
+  WORTH_DOING: "值得做",
+  PENDING: "待定",
+  NOT_DOING: "暂不做",
   FAILED: "研究失败",
 };
 
@@ -53,17 +52,6 @@ const materialLabels: Record<ResearchMaterialStatus, string> = {
   COMPLETED: "素材已完成",
   PARTIAL: "素材部分完成",
   FAILED: "素材失败",
-};
-
-const supplementLabels: Record<ResearchSupplementType, string> = {
-  TITLE: "标题",
-  BODY: "正文",
-  SHARE_TEXT: "分享文案",
-  COMMENT: "评论",
-  TRANSCRIPT: "转写文本",
-  SUBTITLE: "字幕",
-  LINK: "相关链接",
-  NOTE: "备注",
 };
 
 const materialTypeLabels: Record<ResearchMaterialType, string> = {
@@ -142,7 +130,7 @@ function ReportVersionCard({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold text-zinc-900">V{version.versionNumber}</span>
+            <span className="font-bold text-zinc-950">V{version.versionNumber}</span>
             {version.isCurrent ? (
               <span className="rounded bg-cyan-50 px-2 py-1 text-xs font-medium text-cyan-800">当前版本</span>
             ) : null}
@@ -154,7 +142,7 @@ function ReportVersionCard({
           </div>
           <p className="mt-1 text-xs text-zinc-500">{dateText(version.createdAt)}</p>
         </div>
-        <ResearchReportVersionActions versionId={version.id} />
+        <ResearchReportVersionActions versionId={version.id} compact />
       </div>
       {version.userInstruction ? (
         <p className="mt-3 text-sm leading-6 text-zinc-700">本轮方向：{version.userInstruction}</p>
@@ -179,9 +167,12 @@ export default async function ResearchDetailPage({ params }: { params: Promise<{
       reportVersions: { orderBy: { versionNumber: "desc" } },
     },
   });
+
   const currentReportVersion = project?.reportVersions.find((version) => version.isCurrent) ?? project?.reportVersions[0];
   const finalReportVersion = project?.reportVersions.find((version) => version.isFinal);
   const historyReportVersions = project?.reportVersions.filter((version) => version.id !== currentReportVersion?.id) ?? [];
+  const keywordSupplements =
+    project?.supplements.filter((supplement) => supplement.type !== "SUBTITLE" && supplement.type !== "TRANSCRIPT") ?? [];
   const activeMaterials =
     project?.materials.filter(
       (material) => material.status !== "REJECTED" && (material.type === "VIDEO" || material.type === "IMAGE"),
@@ -217,7 +208,7 @@ export default async function ResearchDetailPage({ params }: { params: Promise<{
                   {project.entryType}
                 </span>
               </div>
-              <h1 className="mt-4 text-2xl font-semibold">
+              <h1 className="mt-4 text-2xl font-bold">
                 {project.title ?? project.oneLineConclusion ?? "未命名研究项目"}
               </h1>
               <a
@@ -241,62 +232,51 @@ export default async function ResearchDetailPage({ params }: { params: Promise<{
             </section>
 
             <div className="grid gap-4 lg:grid-cols-2">
-            <section className="rounded-lg border border-zinc-200 bg-white p-4">
-              <h2 className="text-base font-semibold">继续研究 / 调整方向</h2>
-              <p className="sr-only">
-                看完当前报告后，可以把新想法写在这里，让系统生成新版报告。适合用来扩展成合集、收窄主题、增加对比对象或补查某个方向。
-              </p>
-              <div className="mt-3">
-                <ResearchIterationForm projectId={project.id} />
-              </div>
-            </section>
-
-            <section className="rounded-lg border border-zinc-200 bg-white p-4">
-              <h2 className="text-base font-semibold">补充材料</h2>
-              <p className="sr-only">
-                小红书、视频号或自动解析不足时，可粘贴转写文本、字幕、正文、评论、分享文案或相关链接。文案有错别字也可以。
-              </p>
-              <div className="mt-3">
-                <ResearchSupplementForm projectId={project.id} />
-              </div>
-              {project.supplements.length > 0 ? (
-                <div className="mt-3 max-h-56 space-y-2 overflow-y-auto pr-1">
-                  {project.supplements.map((supplement) => (
-                    <div key={supplement.id} className="rounded-md border border-zinc-100 bg-zinc-50 p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-xs font-medium text-zinc-500">
-                          {supplementLabels[supplement.type]} · {dateText(supplement.createdAt)}
-                        </div>
-                        <ResearchSupplementDeleteButton supplementId={supplement.id} />
-                      </div>
-                      <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-sm leading-6 text-zinc-700">
-                        {supplement.content}
-                      </p>
-                    </div>
-                  ))}
+              <section className="rounded-lg border border-zinc-200 bg-white p-4">
+                <h2 className="text-base font-bold">继续研究 / 调整方向</h2>
+                <div className="mt-3">
+                  <ResearchIterationForm projectId={project.id} />
                 </div>
-              ) : null}
-            </section>
+              </section>
+
+              <section className="rounded-lg border border-zinc-200 bg-white p-4">
+                <h2 className="text-base font-bold">补充关键词</h2>
+                <div className="mt-3">
+                  <ResearchSupplementForm projectId={project.id} />
+                </div>
+                {keywordSupplements.length > 0 ? (
+                  <div className="mt-3 max-h-56 space-y-2 overflow-y-auto pr-1">
+                    {keywordSupplements.map((supplement) => (
+                      <div key={supplement.id} className="rounded-md border border-zinc-100 bg-zinc-50 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-xs font-medium text-zinc-500">关键词 · {dateText(supplement.createdAt)}</div>
+                          <ResearchSupplementDeleteButton supplementId={supplement.id} />
+                        </div>
+                        <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-sm leading-6 text-zinc-700">
+                          {supplement.content}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
             </div>
 
             <section className="rounded-lg border border-zinc-200 bg-white p-5">
-              <h2 className="text-lg font-semibold">自动解析素材</h2>
-              <p className="mt-1 text-sm text-zinc-600">
-                已下载或自动解析出来的本地文件不在详情页展开，避免占用筛选素材的空间。
-              </p>
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3">
-                <div>
-                  <p className="text-sm font-medium text-zinc-900">已保存素材记录：{project.assets.length} 条</p>
-                  <p className="mt-1 text-xs text-zinc-500">
-                    {project.projectFolderPath ? `本地目录：${project.projectFolderPath}` : "还没有本地素材目录。"}
-                  </p>
-                </div>
+              <div className="flex flex-wrap items-center gap-2">
                 <Link
                   href={`/research/${project.id}/assets`}
                   target="_blank"
-                  className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
+                  className="rounded-md border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-100"
                 >
-                  查看详情
+                  已下载素材
+                </Link>
+                <Link
+                  href={`/research/${project.id}/reports`}
+                  target="_blank"
+                  className="rounded-md border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-100"
+                >
+                  查看历史报告
                 </Link>
               </div>
             </section>
@@ -304,10 +284,7 @@ export default async function ResearchDetailPage({ params }: { params: Promise<{
             <section className="rounded-lg border border-zinc-200 bg-white p-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h2 className="text-lg font-semibold">素材候选池</h2>
-                  <p className="mt-1 text-sm text-zinc-600">
-                    这里只显示可作为视频或图片素材的链接；研究来源链接继续保留在报告和来源区。
-                  </p>
+                  <h2 className="text-lg font-bold">素材候选池</h2>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-600">
@@ -361,7 +338,7 @@ export default async function ResearchDetailPage({ params }: { params: Promise<{
                                   {materialItemStatusLabels[material.status]}
                                 </span>
                               </div>
-                              <h3 className="mt-2 text-base font-semibold text-zinc-950">
+                              <h3 className="mt-2 text-base font-bold text-zinc-950">
                                 {material.chineseTitle ?? material.title}
                               </h3>
                               {material.chineseTitle && material.chineseTitle !== material.title ? (
@@ -387,9 +364,7 @@ export default async function ResearchDetailPage({ params }: { params: Promise<{
                   ))}
                 </div>
               ) : (
-                <p className="mt-3 text-sm text-zinc-600">
-                  还没有视频/图片素材候选。点击“搜索素材”后，系统会抓取具体视频或图片链接。
-                </p>
+                <p className="mt-3 text-sm text-zinc-600">还没有视频/图片素材候选。</p>
               )}
               {trashedMaterials.length > 0 ? (
                 <details className="mt-4 rounded-md border border-zinc-200 bg-zinc-50">
@@ -402,15 +377,7 @@ export default async function ResearchDetailPage({ params }: { params: Promise<{
                       <div key={material.id} className="rounded-md border border-zinc-200 bg-white p-3">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap gap-2 text-xs">
-                              <span className="rounded bg-zinc-100 px-2 py-1 font-medium text-zinc-700">
-                                {materialTypeLabels[material.type]}
-                              </span>
-                              <span className="rounded bg-rose-50 px-2 py-1 font-medium text-rose-700">
-                                {materialItemStatusLabels[material.status]}
-                              </span>
-                            </div>
-                            <h3 className="mt-2 text-sm font-semibold text-zinc-800">{material.title}</h3>
+                            <h3 className="text-sm font-bold text-zinc-800">{material.title}</h3>
                             <a
                               href={material.sourceUrl}
                               target="_blank"
@@ -430,33 +397,36 @@ export default async function ResearchDetailPage({ params }: { params: Promise<{
             </section>
 
             <section className="rounded-lg border border-zinc-200 bg-white p-5">
-              <h2 className="text-lg font-semibold">综述报告</h2>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-lg font-bold">最新综述报告</h2>
+                {currentReportVersion ? (
+                  <ResearchReportVersionActions versionId={currentReportVersion.id} />
+                ) : null}
+              </div>
               {project.reportMarkdown ? (
                 <ReportText text={project.reportMarkdown} />
               ) : (
-                <p className="mt-3 text-sm text-zinc-600">
-                  尚未生成报告。补充必要材料后点击“开始/重新研究”。
-                </p>
+                <p className="mt-3 text-sm text-zinc-600">尚未生成报告。补充必要关键词后点击“开始/重新研究”。</p>
               )}
             </section>
 
             <section className="rounded-lg border border-zinc-200 bg-white p-5">
-              <h2 className="text-lg font-semibold">报告版本</h2>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-lg font-bold">报告版本</h2>
+                <Link
+                  href={`/research/${project.id}/reports`}
+                  target="_blank"
+                  className="rounded-md border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+                >
+                  查看历史报告
+                </Link>
+              </div>
               {project.reportVersions.length > 0 ? (
                 <div className="mt-4 space-y-3">
                   {currentReportVersion ? <ReportVersionCard version={currentReportVersion} /> : null}
-                  {historyReportVersions.length > 0 ? (
-                    <details className="rounded-md border border-zinc-200 bg-white">
-                      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-zinc-700">
-                        历史版本 {historyReportVersions.length} 个
-                      </summary>
-                      <div className="space-y-3 border-t border-zinc-100 p-3">
-                        {historyReportVersions.map((version) => (
-                          <ReportVersionCard key={version.id} version={version} />
-                        ))}
-                      </div>
-                    </details>
-                  ) : null}
+                  {historyReportVersions.map((version) => (
+                    <ReportVersionCard key={version.id} version={version} />
+                  ))}
                 </div>
               ) : (
                 <p className="mt-3 text-sm text-zinc-600">还没有报告版本。第一次生成报告后会自动保存 V1。</p>
@@ -464,12 +434,12 @@ export default async function ResearchDetailPage({ params }: { params: Promise<{
             </section>
 
             <section className="rounded-lg border border-zinc-200 bg-white p-5">
-              <h2 className="text-lg font-semibold">来源链接</h2>
+              <h2 className="text-lg font-bold">来源链接</h2>
               {sourceList(project.sourceList).length > 0 ? (
                 <ul className="mt-3 space-y-2 text-sm">
                   {sourceList(project.sourceList).map((source) => (
                     <li key={`${source.type}-${source.url}`} className="rounded-md bg-zinc-50 px-3 py-2">
-                      <div className="font-medium text-zinc-800">{source.title}</div>
+                      <div className="font-bold text-zinc-800">{source.title}</div>
                       <a
                         href={source.url}
                         target="_blank"
@@ -482,9 +452,7 @@ export default async function ResearchDetailPage({ params }: { params: Promise<{
                   ))}
                 </ul>
               ) : (
-                <p className="mt-3 text-sm text-zinc-600">
-                  暂无来源链接。重新研究后会保存原始链接和补充材料中的 URL。
-                </p>
+                <p className="mt-3 text-sm text-zinc-600">暂无来源链接。</p>
               )}
             </section>
           </>

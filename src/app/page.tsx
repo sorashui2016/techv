@@ -1,8 +1,10 @@
 import Image from "next/image";
 import Link from "next/link";
-import type { DecisionStatus, Prisma } from "@prisma/client";
+import type { DecisionStatus, ExploreCandidateStatus, Prisma } from "@prisma/client";
 import { ClearRejectedVideosButton } from "@/components/ClearRejectedVideosButton";
 import { DashboardFilters } from "@/components/DashboardFilters";
+import { ExploreCandidateActions } from "@/components/ExploreCandidateActions";
+import { MaterialPoolDownloadButton } from "@/components/MaterialPoolDownloadButton";
 import { Nav } from "@/components/Nav";
 import { SubmitLinkForm } from "@/components/SubmitLinkForm";
 import { VideoActions } from "@/components/VideoActions";
@@ -14,6 +16,7 @@ import { prisma } from "@/lib/db";
 export const dynamic = "force-dynamic";
 
 type VideoRow = Prisma.VideoItemGetPayload<{ include: { source: true } }>;
+type ExploreRow = Prisma.ExploreCandidateGetPayload<object>;
 
 type SearchParams = Promise<{
   status?: string;
@@ -33,31 +36,59 @@ function dateText(date?: Date | null) {
   }).format(date);
 }
 
+const sharedPoolStatuses = new Set(["CANDIDATE", "DONE", "PENDING", "MATERIAL", "REJECTED"]);
+
+function isSharedPoolStatus(status: string): status is DecisionStatus & ExploreCandidateStatus {
+  return sharedPoolStatuses.has(status);
+}
+
 export default async function Home({ searchParams }: { searchParams: SearchParams }) {
   const params = await searchParams;
   const selectedStatus = params.status ?? "UNMARKED";
 
   let videos: VideoRow[] = [];
+  let exploreCandidates: ExploreRow[] = [];
   let dbError = false;
+  const showUnifiedPool = isSharedPoolStatus(selectedStatus);
 
   try {
-    videos = await prisma.videoItem.findMany({
-      include: { source: true },
-      where: {
-        decisionStatus:
-          selectedStatus !== "ALL" ? (selectedStatus as DecisionStatus) : undefined,
-        platform: params.platform && params.platform !== "ALL" ? (params.platform as never) : undefined,
-        OR: params.q
-          ? [
-              { originalTitle: { contains: params.q, mode: "insensitive" } },
-              { chineseTitle: { contains: params.q, mode: "insensitive" } },
-              { sourceName: { contains: params.q, mode: "insensitive" } },
-            ]
-          : undefined,
-      },
-      orderBy: [{ source: { tier: "desc" } }, { detectedAt: "desc" }],
-      take: 80,
-    });
+    [videos, exploreCandidates] = await Promise.all([
+      prisma.videoItem.findMany({
+        include: { source: true },
+        where: {
+          researchProjects: { none: {} },
+          decisionStatus:
+            selectedStatus !== "ALL" ? (selectedStatus as DecisionStatus) : undefined,
+          platform: params.platform && params.platform !== "ALL" ? (params.platform as never) : undefined,
+          OR: params.q
+            ? [
+                { originalTitle: { contains: params.q, mode: "insensitive" } },
+                { chineseTitle: { contains: params.q, mode: "insensitive" } },
+                { sourceName: { contains: params.q, mode: "insensitive" } },
+              ]
+            : undefined,
+        },
+        orderBy: [{ source: { tier: "desc" } }, { detectedAt: "desc" }],
+        take: 80,
+      }),
+      showUnifiedPool
+        ? prisma.exploreCandidate.findMany({
+            where: {
+              status: selectedStatus as ExploreCandidateStatus,
+              platform: params.platform && params.platform !== "ALL" ? (params.platform as never) : undefined,
+              OR: params.q
+                ? [
+                    { originalTitle: { contains: params.q, mode: "insensitive" } },
+                    { chineseTitle: { contains: params.q, mode: "insensitive" } },
+                    { sourceName: { contains: params.q, mode: "insensitive" } },
+                  ]
+                : undefined,
+            },
+            orderBy: [{ updatedAt: "desc" }],
+            take: 80,
+          })
+        : Promise.resolve([]),
+    ]);
   } catch (error) {
     if (isKnownPrismaConnectionError(error)) dbError = true;
     else throw error;
@@ -109,7 +140,10 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
           </DashboardFilters>
 
           {selectedStatus === "REJECTED" && !dbError ? (
-            <ClearRejectedVideosButton count={videos.length} />
+            <ClearRejectedVideosButton count={videos.length + exploreCandidates.length} />
+          ) : null}
+          {selectedStatus === "MATERIAL" && !dbError ? (
+            <MaterialPoolDownloadButton endpoint="/api/materials/download" disabled={videos.length + exploreCandidates.length === 0} />
           ) : null}
         </section>
 
@@ -119,7 +153,7 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
           </div>
         ) : null}
 
-        {!dbError && videos.length === 0 ? (
+        {!dbError && videos.length + exploreCandidates.length === 0 ? (
           <div className="rounded-lg border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-600">
             {selectedStatus === "UNMARKED"
               ? "当前没有待处理内容。可以先手动提交视频链接，或到信息源页面添加 YouTube 频道。"
@@ -128,6 +162,51 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
         ) : null}
 
         <section className="grid gap-4 lg:grid-cols-2">
+          {exploreCandidates.map((candidate) => (
+            <article key={candidate.id} className="rounded-lg border border-sky-200 bg-sky-50 p-4">
+              <div className="flex flex-wrap gap-2 text-xs">
+                <span className="rounded bg-cyan-50 px-2 py-1 font-medium text-cyan-800">
+                  探索 · {platformLabels[candidate.platform]}
+                </span>
+                <span className="rounded bg-lime-50 px-2 py-1 font-medium text-lime-800">
+                  {candidate.score} 分
+                </span>
+                <span className="rounded bg-zinc-200 px-2 py-1 font-medium text-zinc-700">
+                  {decisionLabels[candidate.status as DecisionStatus]}
+                </span>
+              </div>
+              <div className="mt-4 grid gap-4 sm:grid-cols-[180px_1fr]">
+                <a
+                  href={candidate.originalUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="relative aspect-video overflow-hidden rounded-md bg-zinc-200"
+                >
+                  {candidate.thumbnailUrl ? (
+                    <Image src={candidate.thumbnailUrl} alt="" fill className="object-cover" unoptimized />
+                  ) : null}
+                </a>
+                <div className="flex flex-col gap-3">
+                  <a
+                    href={candidate.originalUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-base font-semibold leading-6 text-zinc-950 hover:text-teal-700"
+                  >
+                    {candidate.chineseTitle ?? candidate.originalTitle}
+                  </a>
+                  <p className="text-sm leading-6 text-zinc-700">{candidate.chineseSummary}</p>
+                  <div className="grid gap-1 text-xs text-zinc-500 sm:grid-cols-2">
+                    <span>来源：{candidate.sourceName}</span>
+                    <span>发布时间：{dateText(candidate.publishedAt)}</span>
+                    <span>观看：{candidate.viewCount ?? "未知"}</span>
+                    <span>发现：{dateText(candidate.discoveredAt)}</span>
+                  </div>
+                  <ExploreCandidateActions candidateId={candidate.id} currentStatus={candidate.status} />
+                </div>
+              </div>
+            </article>
+          ))}
           {videos.map((video) => {
             const isOld = now - video.detectedAt.getTime() > 7 * 24 * 60 * 60 * 1000;
             const isViewedUnmarked =

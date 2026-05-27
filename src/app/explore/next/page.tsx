@@ -23,8 +23,23 @@ function jsonArray(value: ExploreCandidate["tags"]) {
   return Array.isArray(value) ? value.map(String) : [];
 }
 
+function aggregationSources(value: ExploreCandidate["matchedRules"]) {
+  if (!Array.isArray(value)) return [];
+  const aggregation = value.find((item) => {
+    return (
+      typeof item === "object" &&
+      item !== null &&
+      "kind" in item &&
+      (item as { kind?: unknown }).kind === "topicAggregation"
+    );
+  }) as { sources?: Array<{ url?: string; title?: string; sourceName?: string }> } | undefined;
+
+  return Array.isArray(aggregation?.sources) ? aggregation.sources.filter((source) => source.url) : [];
+}
+
 export default async function ExploreNextPage() {
   const candidate = await getNextExploreCandidate();
+  const sources = candidate ? aggregationSources(candidate.matchedRules) : [];
 
   return (
     <>
@@ -95,6 +110,24 @@ export default async function ExploreNextPage() {
               <p className="mt-4 rounded-md bg-zinc-50 px-3 py-2 text-sm text-zinc-700">
                 {candidate.recommendationReason}
               </p>
+            ) : null}
+            {sources.length > 1 ? (
+              <div className="mt-4 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-600">
+                <p className="font-medium text-zinc-800">Aggregated from {sources.length} signals</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {sources.slice(0, 4).map((source) => (
+                    <a
+                      key={source.url}
+                      href={source.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded bg-zinc-100 px-2 py-1 hover:bg-teal-50 hover:text-teal-700"
+                    >
+                      {source.sourceName ?? source.title ?? "source"}
+                    </a>
+                  ))}
+                </div>
+              </div>
             ) : null}
             <div className="mt-5">
               <ExploreCandidateActions candidateId={candidate.id} currentStatus={candidate.status} showNext />

@@ -9,7 +9,7 @@ export function ClearRejectedVideosButton({ count }: { count: number }) {
   const [message, setMessage] = useState<string | null>(null);
 
   async function clearRejected() {
-    const confirmed = window.confirm(`确定清空“不做”池里的 ${count} 条内容吗？此操作会删除这些视频记录。`);
+    const confirmed = window.confirm(`确定清空“不做”池里的 ${count} 条内容吗？此操作会删除雷达和探索里的不做记录。`);
     if (!confirmed) return;
 
     setIsClearing(true);
@@ -38,7 +38,7 @@ export function ClearRejectedVideosButton({ count }: { count: number }) {
         {isClearing ? "正在清空..." : "清空不做池"}
       </button>
       <span className="text-sm text-rose-800">
-        当前不做池共 {count} 条。清空后只删除视频记录，不会删除信息源。
+        当前不做池共 {count} 条。清空后只删除内容记录，不会删除信息源或探索规则。
       </span>
       {message ? <span className="text-sm font-medium text-rose-900">{message}</span> : null}
     </div>

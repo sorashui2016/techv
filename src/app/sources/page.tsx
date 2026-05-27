@@ -22,6 +22,32 @@ function dateText(date?: Date | null) {
   }).format(date);
 }
 
+function sourceIssue(error?: string | null) {
+  if (!error) return null;
+  if (/timed out|timeout|Unable to download API page|TransportError|HTTP Error 429|Too Many Requests/i.test(error)) {
+    return {
+      tone: "amber",
+      label: "监测失败：网络超时或平台限流，链接不一定失效",
+      result: "failed · 网络/平台问题",
+      needsReplacement: false,
+    };
+  }
+  if (/not found|does not exist|404|unavailable|terminated|account.*closed|channel.*closed/i.test(error)) {
+    return {
+      tone: "rose",
+      label: "链接可能失效：建议删除或替换",
+      result: "failed · 链接需要处理",
+      needsReplacement: true,
+    };
+  }
+  return {
+    tone: "amber",
+    label: "监测失败：请稍后重试，必要时再替换链接",
+    result: "failed · 待复查",
+    needsReplacement: false,
+  };
+}
+
 export default async function SourcesPage() {
   let sources: SourceRow[] = [];
   let dbError = false;
@@ -72,9 +98,11 @@ export default async function SourcesPage() {
             </thead>
             <tbody>
               {sources.map((source) => {
-                const hasError = source.lastCheckStatus === "failed" || Boolean(source.lastCheckError);
-                const rowClass = hasError
-                  ? "bg-rose-50"
+                const issue = source.lastCheckStatus === "failed" || source.lastCheckError ? sourceIssue(source.lastCheckError) : null;
+                const rowClass = issue
+                  ? issue.tone === "rose"
+                    ? "bg-rose-50"
+                    : "bg-amber-50"
                   : source.tier === "IMPORTANT"
                     ? "bg-zinc-50"
                     : "";
@@ -90,19 +118,22 @@ export default async function SourcesPage() {
                       >
                         {source.name}
                       </a>
-                      {hasError ? (
-                        <div className="mt-2 inline-flex rounded bg-rose-100 px-2 py-1 text-xs font-medium text-rose-800">
-                          链接需要处理：删除或替换为正确链接
-                        </div>
-                      ) : null}
                     </td>
                     <td className="px-4 py-3">{platformLabels[source.platform]}</td>
                     <td className="px-4 py-3">{tierLabels[source.tier]}</td>
                     <td className="px-4 py-3">{source.status === "ACTIVE" ? "启用" : "禁用"}</td>
                     <td className="px-4 py-3">{dateText(source.lastCheckedAt)}</td>
                     <td className="px-4 py-3">
-                      <div className={hasError ? "font-medium text-rose-700" : ""}>
-                        {hasError ? "failed · 需要处理" : source.lastCheckStatus ?? "未知"}
+                      <div
+                        className={
+                          issue
+                            ? issue.tone === "rose"
+                              ? "font-medium text-rose-700"
+                              : "font-medium text-amber-800"
+                            : ""
+                        }
+                      >
+                        {issue ? issue.result : source.lastCheckStatus ?? "未知"}
                       </div>
                     </td>
                     <td className="px-4 py-3">
@@ -111,7 +142,7 @@ export default async function SourcesPage() {
                         status={source.status}
                         tier={source.tier}
                         url={source.url}
-                        hasError={hasError}
+                        hasError={Boolean(issue?.needsReplacement)}
                       />
                     </td>
                   </tr>
